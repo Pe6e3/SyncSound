@@ -10,6 +10,9 @@
         <button class="save-btn" type="button" :disabled="!selectedAudioFile || isUploadingAudio" @click="uploadAudioFile">
           {{ isUploadingAudio ? "Загрузка..." : "Загрузить аудио" }}
         </button>
+        <button class="save-btn" type="button" :disabled="!canPlayAudio" @click="sendPlaySignal">
+          Play
+        </button>
       </div>
       <p v-if="audioStatusMessage" class="audio-status">{{ audioStatusMessage }}</p>
     </section>
@@ -114,6 +117,18 @@ export default {
     },
     isCurrentMaster(): boolean {
       return Boolean(this.currentDevice?.isMaster)
+    },
+    hasAudioInRoom(): boolean {
+      return this.downloadedAudioRevision > 0
+    },
+    areAllDevicesReady(): boolean {
+      if (!this.devices.length) return false
+      return this.devices.every(device => device.isAudioReady)
+    },
+    canPlayAudio(): boolean {
+      if (!this.isCurrentMaster) return false
+      if (!this.hasAudioInRoom) return false
+      return this.areAllDevicesReady
     }
   },
   methods: {
@@ -342,12 +357,37 @@ export default {
         const request = new Request(`/local-audio/${this.roomId}/${revision}`)
         const response = new Response(blob)
         await cache.put(request, response)
+      }
+
+      // Keep a local object URL for immediate playback on all clients.
+      if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
+      this.audioObjectUrl = URL.createObjectURL(blob)
+    },
+    async playRoomAudio() {
+      if (!this.audioObjectUrl) {
+        this.errorMessage = "Локальный аудиофайл не готов к воспроизведению"
         return
       }
 
-      // Fallback for browsers/environments without Cache Storage support.
-      if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
-      this.audioObjectUrl = URL.createObjectURL(blob)
+      try {
+        const audio = new Audio(this.audioObjectUrl)
+        await audio.play()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Неизвестная ошибка"
+        this.errorMessage = `Не удалось воспроизвести аудио: ${message}`
+      }
+    },
+    sendPlaySignal() {
+      if (!this.canPlayAudio) return
+      if (!this.roomSocket || this.roomSocket.readyState !== WebSocket.OPEN) {
+        this.errorMessage = "Соединение WebSocket недоступно"
+        return
+      }
+
+      this.roomSocket.send(JSON.stringify({
+        type: "play-audio",
+        revision: this.downloadedAudioRevision
+      }))
     },
     async playJoinClick() {
       try {
@@ -384,10 +424,16 @@ export default {
 
       socket.onmessage = async event => {
         try {
-          const payload = JSON.parse(event.data) as { type?: string; room?: RoomDetailsResponse }
-          if (payload.type !== "room-state" || !payload.room) return
-          this.devices = payload.room.devices
-          await this.syncAudioState(payload.room)
+          const payload = JSON.parse(event.data) as { type?: string; room?: RoomDetailsResponse; revision?: number }
+          if (payload.type === "room-state" && payload.room) {
+            this.devices = payload.room.devices
+            await this.syncAudioState(payload.room)
+            return
+          }
+
+          if (payload.type === "play-audio") {
+            await this.playRoomAudio()
+          }
         } catch {
           // Ignore malformed messages.
         }

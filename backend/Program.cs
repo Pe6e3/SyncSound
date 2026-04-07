@@ -343,6 +343,56 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
         {
             var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), context.RequestAborted);
             if (result.MessageType == WebSocketMessageType.Close) break;
+            if (result.MessageType != WebSocketMessageType.Text) continue;
+
+            var incomingText = Encoding.UTF8.GetString(buffer, 0, result.Count);
+            if (string.IsNullOrWhiteSpace(incomingText)) continue;
+
+            string? messageType;
+            try
+            {
+                using var document = JsonDocument.Parse(incomingText);
+                messageType = document.RootElement.TryGetProperty("type", out var typeElement)
+                    ? typeElement.GetString()
+                    : null;
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (messageType != "play-audio") continue;
+
+            PlayAudioMessage? payload;
+            try
+            {
+                payload = JsonSerializer.Deserialize<PlayAudioMessage>(incomingText);
+            }
+            catch
+            {
+                payload = null;
+            }
+            if (payload is null || payload.Revision <= 0) continue;
+
+            bool canPlay;
+            lock (syncRoot)
+            {
+                if (!roomDevices.TryGetValue(roomId, out var devices) || !roomAudioStates.TryGetValue(roomId, out var audioState))
+                {
+                    canPlay = false;
+                }
+                else
+                {
+                    var actor = devices.FirstOrDefault(entry => entry.DeviceId == deviceId);
+                    var isMaster = actor?.IsMaster ?? false;
+                    var hasAudio = !string.IsNullOrWhiteSpace(audioState.FileName) && audioState.Revision == payload.Revision;
+                    var allReady = devices.Count > 0 && devices.All(entry => entry.AudioReadyRevision >= payload.Revision);
+                    canPlay = isMaster && hasAudio && allReady;
+                }
+            }
+
+            if (!canPlay) continue;
+            await BroadcastMessage(roomId, new { type = "play-audio", revision = payload.Revision }, roomSockets, syncRoot);
         }
     }
     finally
@@ -474,6 +524,16 @@ static async Task BroadcastRoomState(
     object syncRoot
 )
 {
+    await BroadcastMessage(roomId, new { type = "room-state", room }, roomSockets, syncRoot);
+}
+
+static async Task BroadcastMessage(
+    string roomId,
+    object payload,
+    Dictionary<string, Dictionary<string, WebSocket>> roomSockets,
+    object syncRoot
+)
+{
     List<WebSocket> sockets;
     lock (syncRoot)
     {
@@ -481,7 +541,7 @@ static async Task BroadcastRoomState(
         sockets = socketsByDevice.Values.Where(socket => socket.State == WebSocketState.Open).ToList();
     }
 
-    var message = JsonSerializer.Serialize(new { type = "room-state", room });
+    var message = JsonSerializer.Serialize(payload);
     var bytes = Encoding.UTF8.GetBytes(message);
 
     foreach (var socket in sockets)
@@ -610,6 +670,10 @@ record RegisterDeviceRequest(
 record UpdateDeviceNameRequest([property: JsonPropertyName("displayName")] string? DisplayName);
 record ChangeMasterRequest([property: JsonPropertyName("actorDeviceId")] string ActorDeviceId);
 record AudioReadyRequest([property: JsonPropertyName("revision")] long Revision);
+record PlayAudioMessage(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("revision")] long Revision
+);
 record RoomAudioState(string? FileName, long Revision, long? UpdatedAtUtc);
 
 record DeviceEntry(
