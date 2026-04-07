@@ -5,14 +5,52 @@
       <h1>Комната</h1>
       <p class="room-id">ID комнаты: {{ roomId }}</p>
       <p v-if="serverUnixSeconds" class="time">Время сервера: {{ serverUnixSeconds }}</p>
+
+      <div class="name-editor">
+        <label class="name-label" for="device-name-input">Имя для этого устройства</label>
+        <input
+          id="device-name-input"
+          v-model="displayNameInput"
+          class="name-input"
+          type="text"
+          maxlength="50"
+          placeholder="Например: Алекс - ноутбук"
+        />
+        <button class="save-btn" type="button" @click="saveDisplayName">Сохранить имя</button>
+      </div>
     </section>
+
+    <section class="panel">
+      <h2>Устройства в комнате</h2>
+      <p v-if="!devices.length" class="empty-label">Пока нет данных об устройствах</p>
+      <ul v-else class="devices-list">
+        <li v-for="device in devices" :key="device.deviceId" class="device-card">
+          <p><strong>ID:</strong> {{ device.deviceId }}</p>
+          <p><strong>Имя:</strong> {{ device.displayName || "Не задано" }}</p>
+          <p><strong>Первый вход:</strong> {{ formatUnix(device.firstSeenUtc) }}</p>
+          <p><strong>Последняя активность:</strong> {{ formatUnix(device.lastSeenUtc) }}</p>
+          <details class="details">
+            <summary>Информация об устройстве</summary>
+            <ul class="info-list">
+              <li v-for="(value, key) in device.deviceInfo" :key="`${device.deviceId}-${key}`">
+                <span class="info-key">{{ key }}:</span> {{ value || "N/A" }}
+              </li>
+            </ul>
+          </details>
+        </li>
+      </ul>
+    </section>
+
     <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
   </main>
 </template>
 
 <script lang="ts">
-import { getRoom } from "@/api/roomApi"
+import { collectDeviceInfo } from "@/utils/deviceInfo"
 import { getServerTimeSeconds } from "@/api/timeApi"
+import { getRoom, registerDevice, updateDeviceName, type DeviceResponse } from "@/api/roomApi"
+
+const LOCAL_DEVICE_ID_KEY = "syncsound-device-id"
 
 export default {
   props: {
@@ -25,17 +63,41 @@ export default {
     return {
       errorMessage: "",
       serverUnixSeconds: 0,
-      timerId: 0 as number
+      timerId: 0 as number,
+      devices: [] as DeviceResponse[],
+      currentDeviceId: "",
+      displayNameInput: ""
     }
   },
   methods: {
-    async loadRoom() {
+    async enterRoom() {
       try {
-        await getRoom(this.roomId)
+        const localDeviceId = window.localStorage.getItem(LOCAL_DEVICE_ID_KEY) ?? undefined
+        const response = await registerDevice(this.roomId, {
+          deviceId: localDeviceId,
+          displayName: this.displayNameInput || undefined,
+          deviceInfo: collectDeviceInfo()
+        })
+
+        this.currentDeviceId = response.deviceId
+        window.localStorage.setItem(LOCAL_DEVICE_ID_KEY, response.deviceId)
+        this.devices = response.room.devices
+
+        const currentDevice = this.devices.find(device => device.deviceId == response.deviceId)
+        this.displayNameInput = currentDevice?.displayName ?? ""
         this.errorMessage = ""
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Комната недоступна: ${message}`
+      }
+    },
+    async refreshRoomState() {
+      try {
+        const room = await getRoom(this.roomId)
+        this.devices = room.devices
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Неизвестная ошибка"
+        this.errorMessage = `Не удалось обновить комнату: ${message}`
       }
     },
     async loadServerTime() {
@@ -45,15 +107,31 @@ export default {
         this.serverUnixSeconds = 0
       }
     },
+    async saveDisplayName() {
+      if (!this.currentDeviceId) return
+
+      try {
+        const room = await updateDeviceName(this.roomId, this.currentDeviceId, this.displayNameInput)
+        this.devices = room.devices
+        this.errorMessage = ""
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Неизвестная ошибка"
+        this.errorMessage = `Не удалось сохранить имя устройства: ${message}`
+      }
+    },
+    formatUnix(unixSeconds: number): string {
+      return new Date(unixSeconds * 1000).toLocaleString("ru-RU")
+    },
     goBackToRooms() {
       this.$router.push("/sound")
     }
   },
   mounted() {
-    this.loadRoom()
+    this.enterRoom()
     this.loadServerTime()
     this.timerId = window.setInterval(() => {
       this.loadServerTime()
+      this.refreshRoomState()
     }, 5000)
   },
   beforeUnmount() {
@@ -62,7 +140,7 @@ export default {
   },
   watch: {
     roomId() {
-      this.loadRoom()
+      this.enterRoom()
     }
   }
 }
@@ -78,7 +156,7 @@ export default {
 }
 
 .panel {
-  width: min(520px, 92vw);
+  width: min(760px, 94vw);
   padding: 22px 24px;
   border-radius: 18px;
   border: 1px solid rgba(140, 157, 255, 0.26);
@@ -89,6 +167,10 @@ export default {
 
 h1 {
   margin: 4px 0 10px;
+}
+
+h2 {
+  margin: 0 0 14px;
 }
 
 .room-id {
@@ -111,6 +193,74 @@ h1 {
 
 .back-btn:hover {
   transform: translateY(-1px);
+}
+
+.name-editor {
+  margin-top: 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.name-label {
+  text-align: left;
+  color: #9ca7d9;
+  font-size: 13px;
+}
+
+.name-input {
+  border: 1px solid rgba(181, 161, 255, 0.35);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(12, 15, 28, 0.75);
+  color: #eef2ff;
+}
+
+.save-btn {
+  justify-self: start;
+  border: 1px solid rgba(181, 161, 255, 0.35);
+  border-radius: 10px;
+  padding: 8px 14px;
+  background: linear-gradient(120deg, rgba(139, 92, 246, 0.42), rgba(53, 224, 215, 0.36));
+  color: #eef2ff;
+  cursor: pointer;
+}
+
+.devices-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.device-card {
+  border: 1px solid rgba(140, 157, 255, 0.22);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(15, 19, 34, 0.7);
+}
+
+.device-card p {
+  margin: 0 0 7px;
+}
+
+.details {
+  margin-top: 8px;
+}
+
+.info-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
+.info-key {
+  color: #9ca7d9;
+}
+
+.empty-label {
+  color: #9ca7d9;
 }
 
 .error {
