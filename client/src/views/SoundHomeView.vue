@@ -25,7 +25,7 @@
 </template>
 
 <script lang="ts">
-import { createRoom, getRooms, type RoomListItem } from "@/api/roomApi"
+import { createRoom, type RoomListItem } from "@/api/roomApi"
 
 export default {
   data() {
@@ -33,28 +33,55 @@ export default {
       errorMessage: "",
       isLoading: false,
       rooms: [] as RoomListItem[],
-      refreshTimerId: 0 as number
+      roomsSocket: null as WebSocket | null,
+      isLeavingSoundPage: false
     }
   },
   methods: {
-    async loadRooms() {
-      this.isLoading = true
+    buildSoundSocketUrl(): string {
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws"
+      return `${protocol}://${window.location.host}/ws/sound`
+    },
+    connectRoomsSocket() {
+      if (this.isLeavingSoundPage) return
+      if (this.roomsSocket && (this.roomsSocket.readyState === WebSocket.OPEN || this.roomsSocket.readyState === WebSocket.CONNECTING)) return
 
-      try {
-        this.rooms = await getRooms()
-        this.errorMessage = ""
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Неизвестная ошибка"
-        this.errorMessage = `Не удалось загрузить комнаты: ${message}`
-      } finally {
+      this.isLoading = true
+      const socket = new WebSocket(this.buildSoundSocketUrl())
+      this.roomsSocket = socket
+
+      socket.onmessage = event => {
+        try {
+          const payload = JSON.parse(event.data) as { type?: string; rooms?: RoomListItem[] }
+          if (payload.type !== "rooms-state" || !payload.rooms) return
+          this.rooms = payload.rooms
+          this.errorMessage = ""
+          this.isLoading = false
+        } catch {
+          // Ignore invalid payload.
+        }
+      }
+
+      socket.onerror = () => {
+        this.errorMessage = "Не удалось подключиться к каналу обновления комнат"
         this.isLoading = false
       }
+
+      socket.onclose = () => {
+        if (this.roomsSocket === socket) this.roomsSocket = null
+        if (this.isLeavingSoundPage) return
+        window.setTimeout(() => this.connectRoomsSocket(), 1500)
+      }
+    },
+    disconnectRoomsSocket() {
+      if (!this.roomsSocket) return
+      this.roomsSocket.close()
+      this.roomsSocket = null
     },
     async openNewRoom() {
       try {
         const roomId = await createRoom()
         this.errorMessage = ""
-        this.loadRooms()
         this.$router.push(`/sound/${roomId}`)
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
@@ -66,14 +93,12 @@ export default {
     }
   },
   mounted() {
-    this.loadRooms()
-    this.refreshTimerId = window.setInterval(() => {
-      this.loadRooms()
-    }, 5000)
+    this.isLeavingSoundPage = false
+    this.connectRoomsSocket()
   },
   beforeUnmount() {
-    if (!this.refreshTimerId) return
-    window.clearInterval(this.refreshTimerId)
+    this.isLeavingSoundPage = true
+    this.disconnectRoomsSocket()
   }
 }
 </script>

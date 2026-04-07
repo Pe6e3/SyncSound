@@ -8,6 +8,7 @@ var rooms = new HashSet<string> { "123456", "654321" };
 var roomDevices = rooms.ToDictionary(roomId => roomId, _ => new List<DeviceEntry>());
 var roomAudioStates = rooms.ToDictionary(roomId => roomId, _ => new RoomAudioState(null, 0, null));
 var roomSockets = new Dictionary<string, Dictionary<string, WebSocket>>();
+var soundHomeSockets = new Dictionary<string, WebSocket>();
 var syncRoot = new object();
 var versionFilePath = Environment.GetEnvironmentVariable("VERSION_FILE_PATH") ?? "/app/data/version.json";
 var audioBaseDirectory = Environment.GetEnvironmentVariable("AUDIO_STORAGE_PATH") ?? "/app/data/audio";
@@ -81,23 +82,21 @@ app.MapGet("/api/rooms", () =>
 {
     lock (syncRoot)
     {
-        var items = rooms
-            .OrderBy(id => id)
-            .Select(id =>
-            {
-                var count = roomDevices.TryGetValue(id, out var devices) ? devices.Count : 0;
-                return new { roomId = id, deviceCount = count };
-            });
-        return Results.Ok(items);
+        return Results.Ok(BuildRoomsListResponse(rooms, roomDevices));
     }
 });
 
-app.MapPost("/api/rooms", () =>
+app.MapPost("/api/rooms", async () =>
 {
     var roomId = GenerateRoomId(rooms);
-    rooms.Add(roomId);
-    roomDevices[roomId] = new List<DeviceEntry>();
-    roomAudioStates[roomId] = new RoomAudioState(null, 0, null);
+    lock (syncRoot)
+    {
+        rooms.Add(roomId);
+        roomDevices[roomId] = new List<DeviceEntry>();
+        roomAudioStates[roomId] = new RoomAudioState(null, 0, null);
+    }
+
+    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, syncRoot);
     return Results.Ok(new { roomId });
 });
 
@@ -164,6 +163,7 @@ app.MapPost("/api/rooms/{roomId}/devices/register", async (string roomId, Regist
     }
 
     await BroadcastRoomState(roomId, response.Room, roomSockets, syncRoot);
+    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, syncRoot);
     return Results.Ok(response);
 });
 
@@ -473,6 +473,42 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
 
         if (updatedRoom is not null)
             await BroadcastRoomState(roomId, updatedRoom, roomSockets, syncRoot);
+        await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, syncRoot);
+
+        if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Disconnected", CancellationToken.None);
+    }
+});
+
+app.Map("/ws/sound", async (HttpContext context) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        return;
+    }
+
+    var socket = await context.WebSockets.AcceptWebSocketAsync();
+    var connectionId = Guid.NewGuid().ToString("N");
+
+    lock (syncRoot)
+        soundHomeSockets[connectionId] = socket;
+
+    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, syncRoot);
+
+    var buffer = new byte[512];
+    try
+    {
+        while (socket.State == WebSocketState.Open)
+        {
+            var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), context.RequestAborted);
+            if (result.MessageType == WebSocketMessageType.Close) break;
+        }
+    }
+    finally
+    {
+        lock (syncRoot)
+            soundHomeSockets.Remove(connectionId);
 
         if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
             await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Disconnected", CancellationToken.None);
@@ -606,6 +642,50 @@ static async Task BroadcastMessage(
     }
 }
 
+static async Task BroadcastSoundHomeState(
+    Dictionary<string, WebSocket> soundHomeSockets,
+    HashSet<string> rooms,
+    Dictionary<string, List<DeviceEntry>> roomDevices,
+    object syncRoot
+)
+{
+    List<WebSocket> sockets;
+    RoomsListResponse payload;
+    lock (syncRoot)
+    {
+        sockets = soundHomeSockets.Values.Where(socket => socket.State == WebSocketState.Open).ToList();
+        if (sockets.Count == 0) return;
+        payload = new RoomsListResponse("rooms-state", BuildRoomsListResponse(rooms, roomDevices));
+    }
+
+    var message = JsonSerializer.Serialize(payload);
+    var bytes = Encoding.UTF8.GetBytes(message);
+
+    foreach (var socket in sockets)
+    {
+        try
+        {
+            await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+        }
+        catch
+        {
+            // Socket could be closed by peer.
+        }
+    }
+}
+
+static List<RoomListItemResponse> BuildRoomsListResponse(HashSet<string> rooms, Dictionary<string, List<DeviceEntry>> roomDevices)
+{
+    return rooms
+        .OrderBy(id => id)
+        .Select(id =>
+        {
+            var count = roomDevices.TryGetValue(id, out var devices) ? devices.Count : 0;
+            return new RoomListItemResponse(id, count);
+        })
+        .ToList();
+}
+
 app.Run();
 
 static string GenerateRoomId(HashSet<string> rooms)
@@ -724,6 +804,14 @@ record PlayAudioMessage(
     [property: JsonPropertyName("revision")] long Revision
 );
 record RoomAudioState(string? FileName, long Revision, long? UpdatedAtUtc);
+record RoomsListResponse(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("rooms")] List<RoomListItemResponse> Rooms
+);
+record RoomListItemResponse(
+    [property: JsonPropertyName("roomId")] string RoomId,
+    [property: JsonPropertyName("deviceCount")] int DeviceCount
+);
 
 record DeviceEntry(
     string DeviceId,
