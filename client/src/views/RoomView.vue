@@ -102,7 +102,8 @@ export default {
       audioObjectUrl: "",
       roomSocket: null as WebSocket | null,
       wsReconnectTimerId: 0 as number,
-      wsReconnectAttempts: 0
+      wsReconnectAttempts: 0,
+      isLeavingRoom: false
     }
   },
   computed: {
@@ -131,6 +132,7 @@ export default {
   methods: {
     async enterRoom() {
       try {
+        this.isLeavingRoom = false
         const localDeviceId = window.localStorage.getItem(LOCAL_DEVICE_ID_KEY) ?? undefined
         const response = await registerDevice(this.roomId, {
           deviceId: localDeviceId,
@@ -152,6 +154,22 @@ export default {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Комната недоступна: ${message}`
+      }
+    },
+    async rejoinRoom() {
+      if (!this.currentDeviceId) return
+
+      try {
+        const response = await registerDevice(this.roomId, {
+          deviceId: this.currentDeviceId,
+          displayName: this.displayNameInput || undefined,
+          deviceInfo: collectDeviceInfo()
+        })
+        this.devices = response.room.devices
+        await this.syncAudioState(response.room)
+        this.connectRoomSocket()
+      } catch {
+        this.scheduleReconnect()
       }
     },
     async saveDisplayName() {
@@ -391,6 +409,7 @@ export default {
     },
     connectRoomSocket() {
       if (!this.currentDeviceId) return
+      if (this.isLeavingRoom) return
       if (this.roomSocket && (this.roomSocket.readyState === WebSocket.OPEN || this.roomSocket.readyState === WebSocket.CONNECTING)) return
 
       const socket = new WebSocket(this.buildRoomSocketUrl())
@@ -425,6 +444,7 @@ export default {
 
       socket.onclose = () => {
         if (this.roomSocket === socket) this.roomSocket = null
+        if (this.isLeavingRoom) return
         this.scheduleReconnect()
       }
     },
@@ -436,7 +456,7 @@ export default {
       const delayMs = Math.min(15000, 1000 * 2 ** (this.wsReconnectAttempts - 1))
       this.wsReconnectTimerId = window.setTimeout(() => {
         this.wsReconnectTimerId = 0
-        this.connectRoomSocket()
+        this.rejoinRoom()
       }, delayMs)
     },
     clearReconnectTimer() {
@@ -452,6 +472,8 @@ export default {
       this.roomSocket = null
     },
     goBackToRooms() {
+      this.isLeavingRoom = true
+      this.disconnectRoomSocket()
       this.$router.push("/sound")
     }
   },
