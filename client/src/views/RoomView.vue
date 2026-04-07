@@ -1,10 +1,12 @@
 <template>
-  <main class="container">
-    <button type="button" @click="goBackToRooms">Назад</button>
-    <h1>Комната</h1>
-    <p>ID комнаты: {{ roomId }}</p>
-    <p v-if="serverUnixSeconds" class="time">Время сервера: {{ serverUnixSeconds }}</p>
-    <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
+  <main class="page-wrap">
+    <section class="panel">
+      <button type="button" class="back-btn" @click="goBackToRooms">Назад</button>
+      <h1>Комната</h1>
+      <p class="room-id">ID комнаты: {{ roomId }}</p>
+      <p v-if="serverUnixSeconds" class="time">Время сервера: {{ serverUnixSeconds }}</p>
+      <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
+    </section>
   </main>
 </template>
 
@@ -67,20 +69,56 @@ export default {
 </script>
 
 <style scoped>
-.container {
+.page-wrap {
   min-height: 100vh;
-  display: grid;
-  place-content: center;
-  gap: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.panel {
+  width: min(100%, 560px);
+  padding: 28px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: linear-gradient(145deg, rgba(21, 62, 48, 0.9), rgba(10, 32, 24, 0.95));
+  box-shadow: var(--shadow);
   text-align: center;
-  font-family: Arial, sans-serif;
+}
+
+.back-btn {
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 14px;
+  background: rgba(11, 33, 25, 0.85);
+  color: var(--text-main);
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.back-btn:hover {
+  border-color: var(--brand-strong);
+  background: rgba(20, 51, 40, 0.9);
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(30px, 4vw, 40px);
+}
+
+.room-id {
+  margin: 10px 0 8px;
+  color: var(--text-muted);
 }
 
 .error {
-  color: #b91c1c;
+  color: var(--danger);
 }
 
 .time {
+  margin: 0;
   font-weight: 700;
 }
 </style>
