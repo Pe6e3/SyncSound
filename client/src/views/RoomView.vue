@@ -18,6 +18,9 @@
           Play
         </button>
       </div>
+      <button v-if="pendingPlayAfterUnlock" class="save-btn" type="button" @click="unlockAudioPlayback">
+        Активировать звук
+      </button>
       <p v-if="audioStatusMessage" class="audio-status">{{ audioStatusMessage }}</p>
     </section>
 
@@ -130,7 +133,9 @@ export default {
       roomSocket: null as WebSocket | null,
       wsReconnectTimerId: 0 as number,
       wsReconnectAttempts: 0,
-      isLeavingRoom: false
+      isLeavingRoom: false,
+      isAudioInteractionUnlocked: false,
+      pendingPlayAfterUnlock: false
     }
   },
   computed: {
@@ -415,10 +420,49 @@ export default {
       try {
         const audio = new Audio(this.audioObjectUrl)
         await audio.play()
+        this.pendingPlayAfterUnlock = false
       } catch (error) {
+        if (error instanceof DOMException && error.name === "NotAllowedError") {
+          this.pendingPlayAfterUnlock = true
+          this.audioStatusMessage = "iPhone блокирует автозапуск. Нажмите 'Активировать звук'."
+          return
+        }
+
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Не удалось воспроизвести аудио: ${message}`
       }
+    },
+    async unlockAudioPlayback() {
+      try {
+        const warmupAudio = new Audio("/api/audio/click")
+        warmupAudio.volume = 0
+        await warmupAudio.play()
+        warmupAudio.pause()
+        warmupAudio.currentTime = 0
+        this.isAudioInteractionUnlocked = true
+        this.audioStatusMessage = "Звук активирован."
+
+        if (this.pendingPlayAfterUnlock) await this.playRoomAudio()
+      } catch {
+        this.audioStatusMessage = "Не удалось активировать звук. Повторите касание."
+      }
+    },
+    installAudioUnlockListeners() {
+      const unlockHandler = () => {
+        if (this.isAudioInteractionUnlocked) return
+        this.unlockAudioPlayback()
+      }
+
+      window.addEventListener("touchstart", unlockHandler, { passive: true })
+      window.addEventListener("click", unlockHandler, { passive: true })
+      ;(this as unknown as { _audioUnlockHandler?: () => void })._audioUnlockHandler = unlockHandler
+    },
+    removeAudioUnlockListeners() {
+      const handler = (this as unknown as { _audioUnlockHandler?: () => void })._audioUnlockHandler
+      if (!handler) return
+      window.removeEventListener("touchstart", handler)
+      window.removeEventListener("click", handler)
+      ;(this as unknown as { _audioUnlockHandler?: () => void })._audioUnlockHandler = undefined
     },
     sendPlaySignal() {
       if (!this.canPlayAudio) return
@@ -557,9 +601,11 @@ export default {
     }
   },
   mounted() {
+    this.installAudioUnlockListeners()
     this.enterRoom()
   },
   beforeUnmount() {
+    this.removeAudioUnlockListeners()
     wsDebugLog("beforeUnmount: размонтирование комнаты")
     this.disconnectRoomSocket()
     if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
