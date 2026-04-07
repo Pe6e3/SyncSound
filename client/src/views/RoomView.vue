@@ -418,6 +418,7 @@ h2 {
 }
 
 .role-dot--master[disabled] {
+  transform: translateX(-2px);
   border-color: rgba(255, 213, 106, 0.5);
   color: #ffd56a;
   background: rgba(255, 213, 106, 0.16);
