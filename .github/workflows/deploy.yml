@@ -22,4 +22,29 @@ jobs:
             cd /home/pe6e3/SyncSound
             git checkout main
             git pull --ff-only origin main
+            mkdir -p backend/data
+            python3 - <<'PY'
+            import json
+            import re
+            from pathlib import Path
+
+            version_file = Path("backend/data/version.json")
+
+            if version_file.exists():
+                data = json.loads(version_file.read_text())
+                version = str(data.get("version", "v1.0.0"))
+            else:
+                version = "v1.0.0"
+
+            match = re.match(r"^v(\d+)\.(\d+)\.(\d+)$", version)
+            if not match:
+                major, minor, patch = 1, 0, 0
+            else:
+                major, minor, patch = map(int, match.groups())
+
+            patch += 1
+            next_version = f"v{major}.{minor}.{patch}"
+            version_file.write_text(json.dumps({"version": next_version}))
+            print(f"Deploy version: {next_version}")
+            PY
             docker compose up --build -d

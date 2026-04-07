@@ -4,6 +4,10 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: syncsound-backend
+    volumes:
+      - ./backend/data:/app/data
+    environment:
+      - VERSION_FILE_PATH=/app/data/version.json
     restart: unless-stopped
 
   nginx:

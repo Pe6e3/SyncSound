@@ -1,5 +1,9 @@
+using System.Text.Json;
+
 var builder = WebApplication.CreateBuilder(args);
 var rooms = new HashSet<string> { "123456", "654321" };
+var versionFilePath = Environment.GetEnvironmentVariable("VERSION_FILE_PATH") ?? "/app/data/version.json";
+EnsureVersionFile(versionFilePath);
 
 builder.Services.AddCors(options =>
 {
@@ -20,6 +24,12 @@ app.MapGet("/api/time", () =>
 {
     var unixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     return Results.Ok(new { unixSeconds });
+});
+
+app.MapGet("/api/version", () =>
+{
+    var version = ReadVersion(versionFilePath);
+    return Results.Ok(new { version });
 });
 
 app.MapGet("/api/rooms", () =>
@@ -62,3 +72,31 @@ static string GenerateRoomId(HashSet<string> rooms)
 
     throw new InvalidOperationException("Unable to generate unique room id.");
 }
+
+static void EnsureVersionFile(string filePath)
+{
+    var directoryPath = Path.GetDirectoryName(filePath);
+    if (!string.IsNullOrWhiteSpace(directoryPath)) Directory.CreateDirectory(directoryPath);
+    if (File.Exists(filePath)) return;
+
+    var payload = JsonSerializer.Serialize(new VersionPayload("v1.0.0"));
+    File.WriteAllText(filePath, payload);
+}
+
+static string ReadVersion(string filePath)
+{
+    try
+    {
+        var json = File.ReadAllText(filePath);
+        var payload = JsonSerializer.Deserialize<VersionPayload>(json);
+        if (!string.IsNullOrWhiteSpace(payload?.Version)) return payload.Version;
+    }
+    catch
+    {
+        // Fallback handled below.
+    }
+
+    return "v1.0.0";
+}
+
+record VersionPayload(string Version);
