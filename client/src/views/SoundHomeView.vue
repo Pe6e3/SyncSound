@@ -3,8 +3,6 @@
     <section class="panel">
       <p class="badge">SyncSound</p>
       <h1>Комнаты звука</h1>
-      <p class="subtitle">Главный роут проекта: /sound</p>
-
       <button type="button" class="primary-btn" @click="openNewRoom">Создать комнату</button>
 
       <section class="rooms">
