@@ -80,6 +80,30 @@ import { downloadRoomAudio, registerDevice, reportAudioReady, transferMaster, up
 
 const LOCAL_DEVICE_ID_KEY = "syncsound-device-id"
 
+const WS_DEBUG = import.meta.env.DEV
+
+function wsDebugLog(...args: unknown[]) {
+  if (!WS_DEBUG) return
+  console.log("[SyncSound WS]", ...args)
+}
+
+function wsReadyStateLabel(state: number): string {
+  if (state === WebSocket.CONNECTING) return "CONNECTING"
+  if (state === WebSocket.OPEN) return "OPEN"
+  if (state === WebSocket.CLOSING) return "CLOSING"
+  if (state === WebSocket.CLOSED) return "CLOSED"
+  return String(state)
+}
+
+function summarizeRoomForLog(room: RoomDetailsResponse) {
+  return {
+    roomId: room.roomId,
+    deviceCount: room.devices.length,
+    audioRevision: room.audio.revision,
+    hasAudio: room.audio.hasAudio
+  }
+}
+
 export default {
   props: {
     roomId: {
@@ -130,6 +154,20 @@ export default {
     }
   },
   methods: {
+    logWsSnapshot(context: string) {
+      if (!WS_DEBUG) return
+      const main = this.roomSocket
+      wsDebugLog(`снимок (${context})`, {
+        roomId: this.roomId,
+        deviceId: this.currentDeviceId,
+        isLeavingRoom: this.isLeavingRoom,
+        основнойСокет: main
+          ? { readyState: wsReadyStateLabel(main.readyState), url: main.url }
+          : null,
+        reconnectTimerActive: this.wsReconnectTimerId !== 0,
+        попытокПереподключения: this.wsReconnectAttempts
+      })
+    },
     async enterRoom() {
       try {
         this.isLeavingRoom = false
@@ -146,6 +184,7 @@ export default {
         await this.syncAudioState(response.room)
         await this.playClick()
         this.connectRoomSocket()
+        this.logWsSnapshot("после enterRoom")
 
         const currentDevice = this.devices.find(device => device.deviceId === response.deviceId)
         this.displayNameInput = currentDevice?.displayName ?? ""
@@ -159,6 +198,7 @@ export default {
     async rejoinRoom() {
       if (!this.currentDeviceId) return
 
+      wsDebugLog("rejoinRoom: повторная регистрация", { roomId: this.roomId, deviceId: this.currentDeviceId })
       try {
         const response = await registerDevice(this.roomId, {
           deviceId: this.currentDeviceId,
@@ -168,7 +208,9 @@ export default {
         this.devices = response.room.devices
         await this.syncAudioState(response.room)
         this.connectRoomSocket()
+        this.logWsSnapshot("после rejoinRoom")
       } catch {
+        wsDebugLog("rejoinRoom: ошибка регистрации, планируется повтор")
         this.scheduleReconnect()
       }
     },
@@ -379,13 +421,16 @@ export default {
       if (!this.canPlayAudio) return
       if (!this.roomSocket || this.roomSocket.readyState !== WebSocket.OPEN) {
         this.errorMessage = "Соединение WebSocket недоступно"
+        wsDebugLog("sendPlaySignal: сокет недоступен", this.roomSocket ? wsReadyStateLabel(this.roomSocket.readyState) : "null")
         return
       }
 
-      this.roomSocket.send(JSON.stringify({
+      const payload = {
         type: "play-audio",
         revision: this.downloadedAudioRevision
-      }))
+      }
+      wsDebugLog("исходящее сообщение", payload)
+      this.roomSocket.send(JSON.stringify(payload))
     },
     async playClick() {
       try {
@@ -409,42 +454,73 @@ export default {
     },
     connectRoomSocket() {
       if (!this.currentDeviceId) return
-      if (this.isLeavingRoom) return
-      if (this.roomSocket && (this.roomSocket.readyState === WebSocket.OPEN || this.roomSocket.readyState === WebSocket.CONNECTING)) return
+      if (this.isLeavingRoom) {
+        wsDebugLog("connectRoomSocket: пропуск (выход из комнаты)")
+        return
+      }
+      if (this.roomSocket && (this.roomSocket.readyState === WebSocket.OPEN || this.roomSocket.readyState === WebSocket.CONNECTING)) {
+        wsDebugLog("connectRoomSocket: уже есть активное соединение", wsReadyStateLabel(this.roomSocket.readyState))
+        return
+      }
 
-      const socket = new WebSocket(this.buildRoomSocketUrl())
+      const url = this.buildRoomSocketUrl()
+      wsDebugLog("создание WebSocket", { url })
+      const socket = new WebSocket(url)
       this.roomSocket = socket
+      this.logWsSnapshot("сразу после new WebSocket")
 
       socket.onopen = () => {
+        wsDebugLog("событие open", { url: socket.url, readyState: wsReadyStateLabel(socket.readyState) })
         this.wsReconnectAttempts = 0
         this.clearReconnectTimer()
       }
 
       socket.onmessage = async event => {
+        const raw = typeof event.data === "string" ? event.data : "[binary]"
         try {
-          const payload = JSON.parse(event.data) as { type?: string; room?: RoomDetailsResponse; revision?: number; unixSeconds?: number }
+          const payload = JSON.parse(event.data as string) as { type?: string; room?: RoomDetailsResponse; revision?: number; unixSeconds?: number }
           if (payload.type === "room-state" && payload.room) {
+            wsDebugLog("входящее room-state", summarizeRoomForLog(payload.room), { rawLength: raw.length })
             this.devices = payload.room.devices
             await this.syncAudioState(payload.room)
             return
           }
 
           if (payload.type === "server-time" && payload.unixSeconds) {
+            wsDebugLog("входящее server-time", { unixSeconds: payload.unixSeconds })
             this.serverUnixSeconds = payload.unixSeconds
             return
           }
 
           if (payload.type === "play-audio") {
+            wsDebugLog("входящее play-audio", { revision: payload.revision })
             await this.playRoomAudio()
+            return
           }
+
+          wsDebugLog("входящее сообщение (неизвестный type)", { rawPreview: raw.length > 200 ? `${raw.slice(0, 200)}…` : raw })
         } catch {
-          // Ignore malformed messages.
+          wsDebugLog("входящее сообщение (не JSON)", { rawPreview: typeof raw === "string" && raw.length > 200 ? `${raw.slice(0, 200)}…` : raw })
         }
       }
 
-      socket.onclose = () => {
+      socket.onerror = () => {
+        wsDebugLog("событие error", { url: socket.url, readyState: wsReadyStateLabel(socket.readyState) })
+      }
+
+      socket.onclose = (event: CloseEvent) => {
+        wsDebugLog("событие close", {
+          code: event.code,
+          reason: event.reason || "(нет)",
+          wasClean: event.wasClean,
+          url: socket.url
+        })
         if (this.roomSocket === socket) this.roomSocket = null
-        if (this.isLeavingRoom) return
+        this.logWsSnapshot("после onclose")
+        if (this.isLeavingRoom) {
+          wsDebugLog("onclose: без переподключения (выход из комнаты)")
+          return
+        }
         this.scheduleReconnect()
       }
     },
@@ -454,6 +530,7 @@ export default {
 
       this.wsReconnectAttempts += 1
       const delayMs = Math.min(15000, 1000 * 2 ** (this.wsReconnectAttempts - 1))
+      wsDebugLog("план переподключения", { попытка: this.wsReconnectAttempts, delayMs })
       this.wsReconnectTimerId = window.setTimeout(() => {
         this.wsReconnectTimerId = 0
         this.rejoinRoom()
@@ -465,13 +542,18 @@ export default {
       this.wsReconnectTimerId = 0
     },
     disconnectRoomSocket() {
+      wsDebugLog("disconnectRoomSocket: закрытие соединения")
       this.clearReconnectTimer()
       this.wsReconnectAttempts = 0
       if (!this.roomSocket) return
+      const socket = this.roomSocket
+      wsDebugLog("close() вызван", { readyState: wsReadyStateLabel(socket.readyState), url: socket.url })
       this.roomSocket.close()
       this.roomSocket = null
+      this.logWsSnapshot("после disconnectRoomSocket")
     },
     goBackToRooms() {
+      wsDebugLog("Назад: выход из комнаты, закрытие WS")
       this.isLeavingRoom = true
       this.disconnectRoomSocket()
       this.$router.push("/sound")
@@ -481,6 +563,7 @@ export default {
     this.enterRoom()
   },
   beforeUnmount() {
+    wsDebugLog("beforeUnmount: размонтирование комнаты")
     this.disconnectRoomSocket()
     if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
   },
