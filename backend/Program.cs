@@ -41,6 +41,35 @@ app.MapGet("/api/version", () =>
     return Results.Ok(new { version });
 });
 
+_ = Task.Run(async () =>
+{
+    var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+    try
+    {
+        while (await timer.WaitForNextTickAsync())
+        {
+            List<string> activeRoomIds;
+            lock (syncRoot)
+            {
+                activeRoomIds = roomSockets
+                    .Where(pair => pair.Value.Values.Any(socket => socket.State == WebSocketState.Open))
+                    .Select(pair => pair.Key)
+                    .ToList();
+            }
+
+            if (activeRoomIds.Count == 0) continue;
+
+            var unixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            foreach (var roomId in activeRoomIds)
+                await BroadcastMessage(roomId, new { type = "server-time", unixSeconds }, roomSockets, syncRoot);
+        }
+    }
+    catch
+    {
+        // Background notifier is best-effort and should not crash the app.
+    }
+});
+
 app.MapGet("/api/audio/click", () =>
 {
     var clickPath = Path.Combine(audioBaseDirectory, "click.wav");

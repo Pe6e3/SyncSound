@@ -76,8 +76,7 @@
 
 <script lang="ts">
 import { collectDeviceInfo } from "@/utils/deviceInfo"
-import { getServerTimeSeconds } from "@/api/timeApi"
-import { downloadRoomAudio, getRoom, registerDevice, reportAudioReady, transferMaster, updateDeviceName, uploadRoomAudio, type DeviceResponse, type RoomDetailsResponse } from "@/api/roomApi"
+import { downloadRoomAudio, registerDevice, reportAudioReady, transferMaster, updateDeviceName, uploadRoomAudio, type DeviceResponse, type RoomDetailsResponse } from "@/api/roomApi"
 
 const LOCAL_DEVICE_ID_KEY = "syncsound-device-id"
 
@@ -92,7 +91,6 @@ export default {
     return {
       errorMessage: "",
       serverUnixSeconds: 0,
-      timerId: 0 as number,
       devices: [] as DeviceResponse[],
       currentDeviceId: "",
       displayNameInput: "",
@@ -103,7 +101,6 @@ export default {
       audioStatusMessage: "",
       audioObjectUrl: "",
       roomSocket: null as WebSocket | null,
-      roomPollingEnabled: true,
       wsReconnectTimerId: 0 as number,
       wsReconnectAttempts: 0
     }
@@ -145,7 +142,7 @@ export default {
         window.localStorage.setItem(LOCAL_DEVICE_ID_KEY, response.deviceId)
         this.devices = response.room.devices
         await this.syncAudioState(response.room)
-        await this.playJoinClick()
+        await this.playClick()
         this.connectRoomSocket()
 
         const currentDevice = this.devices.find(device => device.deviceId === response.deviceId)
@@ -155,24 +152,6 @@ export default {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Комната недоступна: ${message}`
-      }
-    },
-    async refreshRoomState() {
-      if (!this.roomPollingEnabled) return
-      try {
-        const room = await getRoom(this.roomId)
-        this.devices = room.devices
-        await this.syncAudioState(room)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Неизвестная ошибка"
-        this.errorMessage = `Не удалось обновить комнату: ${message}`
-      }
-    },
-    async loadServerTime() {
-      try {
-        this.serverUnixSeconds = await getServerTimeSeconds()
-      } catch {
-        this.serverUnixSeconds = 0
       }
     },
     async saveDisplayName() {
@@ -344,6 +323,7 @@ export default {
           const updatedRoom = await reportAudioReady(this.roomId, this.currentDeviceId, room.audio.revision)
           this.devices = updatedRoom.devices
         }
+        await this.playClick()
         if (room.audio.fileName) this.audioStatusMessage = `Аудио локально: ${room.audio.fileName}`
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
@@ -389,7 +369,7 @@ export default {
         revision: this.downloadedAudioRevision
       }))
     },
-    async playJoinClick() {
+    async playClick() {
       try {
         const response = await fetch("/api/audio/click")
         if (!response.ok) return
@@ -417,17 +397,21 @@ export default {
       this.roomSocket = socket
 
       socket.onopen = () => {
-        this.roomPollingEnabled = false
         this.wsReconnectAttempts = 0
         this.clearReconnectTimer()
       }
 
       socket.onmessage = async event => {
         try {
-          const payload = JSON.parse(event.data) as { type?: string; room?: RoomDetailsResponse; revision?: number }
+          const payload = JSON.parse(event.data) as { type?: string; room?: RoomDetailsResponse; revision?: number; unixSeconds?: number }
           if (payload.type === "room-state" && payload.room) {
             this.devices = payload.room.devices
             await this.syncAudioState(payload.room)
+            return
+          }
+
+          if (payload.type === "server-time" && payload.unixSeconds) {
+            this.serverUnixSeconds = payload.unixSeconds
             return
           }
 
@@ -440,13 +424,8 @@ export default {
       }
 
       socket.onclose = () => {
-        this.roomPollingEnabled = true
         if (this.roomSocket === socket) this.roomSocket = null
         this.scheduleReconnect()
-      }
-
-      socket.onerror = () => {
-        this.roomPollingEnabled = true
       }
     },
     scheduleReconnect() {
@@ -467,7 +446,6 @@ export default {
     },
     disconnectRoomSocket() {
       this.clearReconnectTimer()
-      this.roomPollingEnabled = true
       this.wsReconnectAttempts = 0
       if (!this.roomSocket) return
       this.roomSocket.close()
@@ -479,14 +457,8 @@ export default {
   },
   mounted() {
     this.enterRoom()
-    this.loadServerTime()
-    this.timerId = window.setInterval(() => {
-      this.loadServerTime()
-      this.refreshRoomState()
-    }, 5000)
   },
   beforeUnmount() {
-    if (this.timerId) window.clearInterval(this.timerId)
     this.disconnectRoomSocket()
     if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
   },
