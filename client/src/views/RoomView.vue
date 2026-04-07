@@ -405,6 +405,7 @@ export default {
         if (this.currentDeviceId) await this.probePlaybackThenReportReady(room.audio.revision)
         await this.playClick()
         if (room.audio.fileName) this.audioStatusMessage = `Аудио локально: ${room.audio.fileName}`
+        this.errorMessage = ""
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Не удалось скачать аудио: ${message}`
@@ -413,26 +414,35 @@ export default {
     async waitForRoomAudioCanPlay(timeoutMs = 25000): Promise<void> {
       const audio = this.getOrCreateRoomAudioPlayer()
       if (!this.audioObjectUrl) throw new Error("Нет локального аудио")
-      if (audio.error) throw new Error(audio.error.message || "Ошибка загрузки аудио")
       if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return
 
       await new Promise<void>((resolve, reject) => {
         const timer = window.setTimeout(() => {
           cleanup()
-          reject(new Error("Таймаут загрузки аудио"))
+          if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+            resolve()
+            return
+          }
+          const code = audio.error?.code
+          const msg =
+            code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+              ? "Формат не поддерживается этим браузером"
+              : audio.error?.message || "Таймаут загрузки аудио"
+          reject(new Error(msg))
         }, timeoutMs)
         const onCanPlay = () => {
           cleanup()
           resolve()
         }
         const onErr = () => {
-          cleanup()
-          const code = audio.error?.code
-          const msg =
-            code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
-              ? "Формат не поддерживается этим браузером"
-              : audio.error?.message || "Не удалось загрузить аудио"
-          reject(new Error(msg))
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+                cleanup()
+                resolve()
+              }
+            })
+          })
         }
         const cleanup = () => {
           window.clearTimeout(timer)
