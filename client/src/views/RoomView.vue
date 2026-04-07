@@ -32,10 +32,9 @@
           <span v-else-if="isFirstJoined(device)" class="first-joined-badge" title="Первым присоединился">★</span>
 
           <p v-if="device.displayName" class="device-name">{{ device.displayName }}</p>
-          <p><strong>Присоединился:</strong> {{ formatUnix(device.firstSeenUtc) }} ({{ formatActivity(device.firstSeenUtc, device.lastSeenUtc) }})</p>
+          <p><strong>Присоединился:</strong> {{ formatUnix(device.firstSeenUtc) }} ({{ formatActivity(device.firstSeenUtc) }})</p>
           <p><strong>Timezone:</strong> {{ getTimezone(device.deviceInfo) }}</p>
           <p><strong>Тип устройства:</strong> {{ getDeviceType(device) }}</p>
-          <p v-if="device.isMaster" class="master-label">Мастер комнаты</p>
 
           <button
             v-if="isCurrentDevice(device)"
@@ -157,17 +156,14 @@ export default {
     formatUnix(unixSeconds: number): string {
       return new Date(unixSeconds * 1000).toLocaleString("ru-RU")
     },
-    formatActivity(firstSeenUtc: number, lastSeenUtc: number): string {
-      const diffSeconds = Math.max(0, lastSeenUtc - firstSeenUtc)
-      if (diffSeconds < 60) return `${diffSeconds} сек`
-
+    formatActivity(firstSeenUtc: number): string {
+      const nowUnix = Math.floor(Date.now() / 1000)
+      const diffSeconds = Math.max(0, nowUnix - firstSeenUtc)
       const minutes = Math.floor(diffSeconds / 60)
-      const seconds = diffSeconds % 60
-      if (minutes < 60) return `${minutes} мин ${seconds} сек`
+      if (minutes <= 90) return `${minutes} мин`
 
-      const hours = Math.floor(minutes / 60)
-      const restMinutes = minutes % 60
-      return `${hours} ч ${restMinutes} мин`
+      const hours = Math.round(minutes / 60)
+      return `${hours} ч`
     },
     getTimezone(deviceInfo: Record<string, string>): string {
       return deviceInfo.timezone || "N/A"
@@ -380,12 +376,6 @@ h2 {
   margin: 0 0 8px;
   font-weight: 700;
   color: var(--brand-strong);
-}
-
-.master-label {
-  margin: 4px 0 0;
-  color: #ffd56a;
-  font-weight: 600;
 }
 
 .first-joined-badge,
