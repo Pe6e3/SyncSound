@@ -1,21 +1,29 @@
 <template>
-  <main class="container">
+  <main class="page-wrap">
     <section class="panel">
-      <h1>SyncSound Rooms</h1>
-      <p class="subtitle">Пространство для совместной работы со звуком</p>
-      <button class="primary-btn" type="button" @click="openNewRoom">Создать комнату</button>
+      <p class="badge">SyncSound</p>
+      <h1>Комнаты звука</h1>
+      <p class="subtitle">Главный роут проекта: /sound</p>
+
+      <button type="button" class="primary-btn" @click="openNewRoom">Создать комнату</button>
+
+      <section class="rooms">
+        <h2>Список комнат</h2>
+        <p v-if="isLoading" class="hint">Загрузка...</p>
+
+        <ul v-else-if="rooms.length" class="room-list">
+          <li v-for="roomId in rooms" :key="roomId">
+            <button type="button" class="room-link" @click="openRoom(roomId)">
+              {{ roomId }}
+            </button>
+          </li>
+        </ul>
+
+        <p v-else class="hint">Комнат пока нет</p>
+      </section>
+
+      <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
     </section>
-    <section class="rooms">
-      <h2>Список комнат</h2>
-      <p v-if="isLoading" class="state-label">Загрузка...</p>
-      <ul v-else-if="rooms.length" class="room-list">
-        <li v-for="roomId in rooms" :key="roomId">
-          <button class="room-btn" @click.prevent="openRoom(roomId)" type="button">{{ roomId }}</button>
-        </li>
-      </ul>
-      <p v-else class="state-label">Комнат пока нет</p>
-    </section>
-    <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
   </main>
 </template>
 
@@ -74,70 +82,81 @@ export default {
 </script>
 
 <style scoped>
-.container {
+.page-wrap {
   min-height: 100vh;
-  display: grid;
-  place-content: center;
-  gap: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 24px;
 }
 
-.panel,
-.rooms {
-  width: min(560px, 92vw);
-  padding: 22px 24px;
-  border-radius: 18px;
-  border: 1px solid rgba(140, 157, 255, 0.26);
-  background: rgba(26, 31, 53, 0.82);
-  box-shadow: 0 18px 50px rgba(8, 10, 20, 0.6);
-}
-
-h1,
-h2 {
-  margin: 0 0 10px;
-  letter-spacing: 0.01em;
-}
-
-.subtitle {
-  margin: 0 0 16px;
-  color: #9ca7d9;
-}
-
-.primary-btn,
-.room-btn {
-  border: 0;
-  border-radius: 12px;
-  padding: 10px 14px;
-  color: #eef2ff;
-  cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
-}
-
-.primary-btn {
-  background: linear-gradient(120deg, #8b5cf6, #35e0d7);
-  box-shadow: 0 8px 20px rgba(53, 224, 215, 0.24);
-  font-weight: 700;
-}
-
-.primary-btn:hover,
-.room-btn:hover {
-  transform: translateY(-1px);
-}
-
-.room-btn {
-  width: 100%;
-  background: linear-gradient(120deg, rgba(139, 92, 246, 0.35), rgba(240, 79, 216, 0.3));
-  border: 1px solid rgba(181, 161, 255, 0.35);
-  font-weight: 600;
-}
-
-.error {
-  color: #ff8aa7;
+.panel {
+  width: min(100%, 620px);
+  padding: 30px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: linear-gradient(145deg, rgba(21, 62, 48, 0.9), rgba(10, 32, 24, 0.95));
+  box-shadow: var(--shadow);
   text-align: center;
 }
 
+.badge {
+  margin: 0 auto 10px;
+  width: fit-content;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(30px, 4vw, 40px);
+}
+
+.subtitle {
+  margin-top: 8px;
+  margin-bottom: 18px;
+  color: var(--text-muted);
+}
+
+.primary-btn {
+  border: none;
+  border-radius: 12px;
+  padding: 12px 18px;
+  background: linear-gradient(180deg, var(--brand-strong), var(--brand));
+  color: #052317;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.2s ease, filter 0.2s ease;
+}
+
+.primary-btn:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+.error {
+  margin-top: 14px;
+  color: var(--danger);
+}
+
 .rooms {
-  margin-top: 2px;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+h2 {
+  margin: 0 0 12px;
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-muted);
 }
 
 .room-list {
@@ -148,7 +167,19 @@ h2 {
   gap: 8px;
 }
 
-.state-label {
-  color: #9ca7d9;
+.room-link {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(13, 36, 28, 0.65);
+  color: var(--text-main);
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.room-link:hover {
+  border-color: var(--brand-strong);
+  background: rgba(20, 51, 40, 0.9);
 }
 </style>

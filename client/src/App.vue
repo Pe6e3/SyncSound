@@ -1,8 +1,10 @@
 <template>
-  <RouterView />
-  <footer class="footer">
-    <span>{{ appVersionText }}</span>
-  </footer>
+  <div class="app-shell">
+    <RouterView />
+    <footer class="footer">
+      <span>{{ appVersionText }}</span>
+    </footer>
+  </div>
 </template>
 
 <script lang="ts">
@@ -39,15 +41,17 @@ export default {
 <style>
 :root {
   color-scheme: dark;
-  --bg-main: #0a0b12;
-  --bg-secondary: #121626;
-  --surface: rgba(26, 31, 53, 0.82);
-  --surface-border: rgba(140, 157, 255, 0.26);
-  --text-main: #e8ecff;
-  --text-soft: #9ca7d9;
-  --accent-cyan: #35e0d7;
-  --accent-violet: #8b5cf6;
-  --accent-magenta: #f04fd8;
+  --bg-main: #06140f;
+  --bg-secondary: #0b251b;
+  --surface: #113126;
+  --surface-soft: #174133;
+  --text-main: #e6f7ee;
+  --text-muted: #9cc9b0;
+  --brand: #2f9f6f;
+  --brand-strong: #3db37e;
+  --danger: #ff8a95;
+  --border: rgba(116, 180, 146, 0.3);
+  --shadow: 0 20px 40px rgba(2, 10, 7, 0.55);
 }
 
 * {
@@ -58,29 +62,36 @@ body {
   margin: 0;
   min-height: 100vh;
   color: var(--text-main);
-  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  font-family: "Inter", "Segoe UI", "Arial", sans-serif;
   background:
-    radial-gradient(circle at 15% 25%, rgba(53, 224, 215, 0.2), transparent 38%),
-    radial-gradient(circle at 80% 5%, rgba(240, 79, 216, 0.18), transparent 42%),
-    radial-gradient(circle at 82% 84%, rgba(139, 92, 246, 0.22), transparent 45%),
+    radial-gradient(circle at top right, #1a5c42 0%, transparent 42%),
+    radial-gradient(circle at bottom left, #0e3b2b 0%, transparent 38%),
     linear-gradient(145deg, var(--bg-main), var(--bg-secondary));
 }
 
-#app {
+a {
+  color: var(--brand-strong);
+}
+
+button {
+  font: inherit;
+}
+
+#app,
+.app-shell {
   min-height: 100vh;
 }
 
 .footer {
   position: fixed;
-  right: 14px;
-  bottom: 10px;
+  right: 16px;
+  bottom: 12px;
   padding: 6px 10px;
   border-radius: 999px;
-  border: 1px solid var(--surface-border);
-  background: rgba(8, 11, 22, 0.72);
-  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  background: rgba(8, 24, 18, 0.7);
+  backdrop-filter: blur(6px);
   font-size: 12px;
-  color: var(--text-soft);
-  letter-spacing: 0.03em;
+  color: var(--text-muted);
 }
 </style>

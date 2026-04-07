@@ -1,5 +1,5 @@
 <template>
-  <main class="container">
+  <main class="page-wrap">
     <section class="panel">
       <button class="back-btn" type="button" @click="goBackToRooms">Назад</button>
       <h1>Комната</h1>
@@ -83,7 +83,7 @@ export default {
         window.localStorage.setItem(LOCAL_DEVICE_ID_KEY, response.deviceId)
         this.devices = response.room.devices
 
-        const currentDevice = this.devices.find(device => device.deviceId == response.deviceId)
+        const currentDevice = this.devices.find(device => device.deviceId === response.deviceId)
         this.displayNameInput = currentDevice?.displayName ?? ""
         this.errorMessage = ""
       } catch (error) {
@@ -147,7 +147,7 @@ export default {
 </script>
 
 <style scoped>
-.container {
+.page-wrap {
   min-height: 100vh;
   display: grid;
   place-content: center;
@@ -157,11 +157,11 @@ export default {
 
 .panel {
   width: min(760px, 94vw);
-  padding: 22px 24px;
+  padding: 24px 26px;
   border-radius: 18px;
-  border: 1px solid rgba(140, 157, 255, 0.26);
-  background: rgba(26, 31, 53, 0.82);
-  box-shadow: 0 18px 50px rgba(8, 10, 20, 0.6);
+  border: 1px solid var(--border);
+  background: linear-gradient(145deg, rgba(21, 62, 48, 0.9), rgba(10, 32, 24, 0.95));
+  box-shadow: var(--shadow);
   text-align: center;
 }
 
@@ -175,24 +175,26 @@ h2 {
 
 .room-id {
   margin: 0 0 8px;
-  color: #e8ecff;
+  color: var(--text-muted);
 }
 
 .back-btn {
   display: inline-block;
   margin-bottom: 8px;
-  border: 1px solid rgba(181, 161, 255, 0.35);
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: linear-gradient(120deg, rgba(139, 92, 246, 0.35), rgba(240, 79, 216, 0.3));
-  color: #eef2ff;
+  background: rgba(11, 33, 25, 0.85);
+  color: var(--text-main);
   font-weight: 600;
   padding: 9px 14px;
   cursor: pointer;
-  transition: transform 0.15s ease;
+  transition: transform 0.15s ease, border-color 0.2s ease, background-color 0.2s ease;
 }
 
 .back-btn:hover {
   transform: translateY(-1px);
+  border-color: var(--brand-strong);
+  background: rgba(20, 51, 40, 0.9);
 }
 
 .name-editor {
@@ -203,26 +205,27 @@ h2 {
 
 .name-label {
   text-align: left;
-  color: #9ca7d9;
+  color: var(--text-muted);
   font-size: 13px;
 }
 
 .name-input {
-  border: 1px solid rgba(181, 161, 255, 0.35);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
-  background: rgba(12, 15, 28, 0.75);
-  color: #eef2ff;
+  background: rgba(7, 23, 17, 0.75);
+  color: var(--text-main);
 }
 
 .save-btn {
   justify-self: start;
-  border: 1px solid rgba(181, 161, 255, 0.35);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 8px 14px;
-  background: linear-gradient(120deg, rgba(139, 92, 246, 0.42), rgba(53, 224, 215, 0.36));
-  color: #eef2ff;
+  background: linear-gradient(180deg, var(--brand-strong), var(--brand));
+  color: #052317;
   cursor: pointer;
+  font-weight: 600;
 }
 
 .devices-list {
@@ -234,10 +237,10 @@ h2 {
 }
 
 .device-card {
-  border: 1px solid rgba(140, 157, 255, 0.22);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px 14px;
-  background: rgba(15, 19, 34, 0.7);
+  background: rgba(15, 41, 31, 0.58);
 }
 
 .device-card p {
@@ -256,20 +259,21 @@ h2 {
 }
 
 .info-key {
-  color: #9ca7d9;
+  color: var(--text-muted);
 }
 
 .empty-label {
-  color: #9ca7d9;
+  color: var(--text-muted);
 }
 
 .error {
-  color: #ff8aa7;
+  color: var(--danger);
   text-align: center;
 }
 
 .time {
+  margin: 0;
   font-weight: 700;
-  color: #35e0d7;
+  color: var(--brand-strong);
 }
 </style>
