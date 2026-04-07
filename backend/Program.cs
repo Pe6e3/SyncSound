@@ -114,12 +114,13 @@ app.MapGet("/api/rooms/{roomId}", (string roomId) =>
     }
 });
 
-app.MapPost("/api/rooms/{roomId}/devices/register", (string roomId, RegisterDeviceRequest request) =>
+app.MapPost("/api/rooms/{roomId}/devices/register", async (string roomId, RegisterDeviceRequest request) =>
 {
     if (!IsValidRoomId(roomId)) return Results.BadRequest(new { message = "Room ID must be 6 digits." });
 
     var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     var normalizedDeviceInfo = NormalizeDeviceInfo(request.DeviceInfo);
+    RegisterDeviceResponse response;
 
     lock (syncRoot)
     {
@@ -147,25 +148,31 @@ app.MapPost("/api/rooms/{roomId}/devices/register", (string roomId, RegisterDevi
                 0
             );
             devices.Add(newDevice);
-            return Results.Ok(new RegisterDeviceResponse(deviceId, BuildRoomResponse(roomId, devices, roomAudioStates)));
+            response = new RegisterDeviceResponse(deviceId, BuildRoomResponse(roomId, devices, roomAudioStates));
         }
-
-        var updatedDevice = existingDevice with
+        else
         {
-            DisplayName = NormalizeDisplayName(request.DisplayName) ?? existingDevice.DisplayName,
-            LastSeenUtc = nowUnix,
-            DeviceInfo = normalizedDeviceInfo
-        };
-        ReplaceDevice(devices, updatedDevice);
-        return Results.Ok(new RegisterDeviceResponse(updatedDevice.DeviceId, BuildRoomResponse(roomId, devices, roomAudioStates)));
+            var updatedDevice = existingDevice with
+            {
+                DisplayName = NormalizeDisplayName(request.DisplayName) ?? existingDevice.DisplayName,
+                LastSeenUtc = nowUnix,
+                DeviceInfo = normalizedDeviceInfo
+            };
+            ReplaceDevice(devices, updatedDevice);
+            response = new RegisterDeviceResponse(updatedDevice.DeviceId, BuildRoomResponse(roomId, devices, roomAudioStates));
+        }
     }
+
+    await BroadcastRoomState(roomId, response.Room, roomSockets, syncRoot);
+    return Results.Ok(response);
 });
 
-app.MapPatch("/api/rooms/{roomId}/devices/{deviceId}/name", (string roomId, string deviceId, UpdateDeviceNameRequest request) =>
+app.MapPatch("/api/rooms/{roomId}/devices/{deviceId}/name", async (string roomId, string deviceId, UpdateDeviceNameRequest request) =>
 {
     if (!IsValidRoomId(roomId)) return Results.BadRequest(new { message = "Room ID must be 6 digits." });
     if (!rooms.Contains(roomId)) return Results.NotFound(new { message = "Room not found." });
     if (!IsValidDeviceId(deviceId)) return Results.BadRequest(new { message = "Device ID is invalid." });
+    RoomDetailsResponse room;
 
     lock (syncRoot)
     {
@@ -179,17 +186,20 @@ app.MapPatch("/api/rooms/{roomId}/devices/{deviceId}/name", (string roomId, stri
             LastSeenUtc = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         };
         ReplaceDevice(devices, updatedDevice);
-
-        return Results.Ok(BuildRoomResponse(roomId, devices, roomAudioStates));
+        room = BuildRoomResponse(roomId, devices, roomAudioStates);
     }
+
+    await BroadcastRoomState(roomId, room, roomSockets, syncRoot);
+    return Results.Ok(room);
 });
 
-app.MapPost("/api/rooms/{roomId}/devices/{deviceId}/master", (string roomId, string deviceId, ChangeMasterRequest request) =>
+app.MapPost("/api/rooms/{roomId}/devices/{deviceId}/master", async (string roomId, string deviceId, ChangeMasterRequest request) =>
 {
     if (!IsValidRoomId(roomId)) return Results.BadRequest(new { message = "Room ID must be 6 digits." });
     if (!rooms.Contains(roomId)) return Results.NotFound(new { message = "Room not found." });
     if (!IsValidDeviceId(deviceId)) return Results.BadRequest(new { message = "Device ID is invalid." });
     if (!IsValidDeviceId(request.ActorDeviceId)) return Results.BadRequest(new { message = "Actor device ID is invalid." });
+    RoomDetailsResponse room;
 
     lock (syncRoot)
     {
@@ -206,16 +216,19 @@ app.MapPost("/api/rooms/{roomId}/devices/{deviceId}/master", (string roomId, str
             var isTarget = devices[index].DeviceId == deviceId;
             devices[index] = devices[index] with { IsMaster = isTarget };
         }
-
-        return Results.Ok(BuildRoomResponse(roomId, devices, roomAudioStates));
+        room = BuildRoomResponse(roomId, devices, roomAudioStates);
     }
+
+    await BroadcastRoomState(roomId, room, roomSockets, syncRoot);
+    return Results.Ok(room);
 });
 
-app.MapPost("/api/rooms/{roomId}/devices/{deviceId}/audio-ready", (string roomId, string deviceId, AudioReadyRequest request) =>
+app.MapPost("/api/rooms/{roomId}/devices/{deviceId}/audio-ready", async (string roomId, string deviceId, AudioReadyRequest request) =>
 {
     if (!IsValidRoomId(roomId)) return Results.BadRequest(new { message = "Room ID must be 6 digits." });
     if (!rooms.Contains(roomId)) return Results.NotFound(new { message = "Room not found." });
     if (!IsValidDeviceId(deviceId)) return Results.BadRequest(new { message = "Device ID is invalid." });
+    RoomDetailsResponse room;
 
     lock (syncRoot)
     {
@@ -229,8 +242,11 @@ app.MapPost("/api/rooms/{roomId}/devices/{deviceId}/audio-ready", (string roomId
             LastSeenUtc = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         };
         ReplaceDevice(devices, updated);
-        return Results.Ok(BuildRoomResponse(roomId, devices, roomAudioStates));
+        room = BuildRoomResponse(roomId, devices, roomAudioStates);
     }
+
+    await BroadcastRoomState(roomId, room, roomSockets, syncRoot);
+    return Results.Ok(room);
 });
 
 app.MapPost("/api/rooms/{roomId}/audio", async (string roomId, HttpRequest request) =>
@@ -285,11 +301,15 @@ app.MapPost("/api/rooms/{roomId}/audio", async (string roomId, HttpRequest reque
         await file.CopyToAsync(stream);
     }
 
+    RoomDetailsResponse room;
     lock (syncRoot)
     {
         var devices = roomDevices.TryGetValue(roomId, out var value) ? value : new List<DeviceEntry>();
-        return Results.Ok(BuildRoomResponse(roomId, devices, roomAudioStates));
+        room = BuildRoomResponse(roomId, devices, roomAudioStates);
     }
+
+    await BroadcastRoomState(roomId, room, roomSockets, syncRoot);
+    return Results.Ok(room);
 });
 
 app.MapGet("/api/rooms/{roomId}/audio", (string roomId) =>
