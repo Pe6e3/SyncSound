@@ -23,6 +23,9 @@ jobs:
             git checkout main
             git pull --ff-only origin main
             mkdir -p backend/data
+            if [ -f backend/data/version.json ] && [ ! -w backend/data/version.json ]; then
+              docker run --rm -v "$PWD/backend/data:/data" alpine:3.20 sh -c "chown -R $(id -u):$(id -g) /data && chmod -R u+rwX /data"
+            fi
             python3 - <<'PY'
             import json
             import re
