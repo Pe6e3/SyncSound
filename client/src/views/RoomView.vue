@@ -4,7 +4,6 @@
       <button class="back-btn" type="button" @click="goBackToRooms">Назад</button>
       <h1>Комната</h1>
       <p class="room-id">ID комнаты: {{ roomId }}</p>
-      <p v-if="serverUnixSeconds" class="time">Время сервера: {{ serverUnixSeconds }}</p>
       <div v-if="isCurrentMaster" class="audio-upload">
         <input class="audio-input" type="file" accept="audio/*" @change="onAudioFileSelected" />
         <button class="save-btn" type="button" :disabled="!selectedAudioFile || isUploadingAudio" @click="uploadAudioFile">
@@ -114,7 +113,6 @@ export default {
   data() {
     return {
       errorMessage: "",
-      serverUnixSeconds: 0,
       devices: [] as DeviceResponse[],
       currentDeviceId: "",
       displayNameInput: "",
@@ -478,17 +476,11 @@ export default {
       socket.onmessage = async event => {
         const raw = typeof event.data === "string" ? event.data : "[binary]"
         try {
-          const payload = JSON.parse(event.data as string) as { type?: string; room?: RoomDetailsResponse; revision?: number; unixSeconds?: number }
+          const payload = JSON.parse(event.data as string) as { type?: string; room?: RoomDetailsResponse; revision?: number }
           if (payload.type === "room-state" && payload.room) {
             wsDebugLog("входящее room-state", summarizeRoomForLog(payload.room), { rawLength: raw.length })
             this.devices = payload.room.devices
             await this.syncAudioState(payload.room)
-            return
-          }
-
-          if (payload.type === "server-time" && payload.unixSeconds) {
-            wsDebugLog("входящее server-time", { unixSeconds: payload.unixSeconds })
-            this.serverUnixSeconds = payload.unixSeconds
             return
           }
 
@@ -756,12 +748,6 @@ h2 {
 .error {
   color: var(--danger);
   text-align: center;
-}
-
-.time {
-  margin: 0;
-  font-weight: 700;
-  color: var(--brand-strong);
 }
 
 .audio-upload {
