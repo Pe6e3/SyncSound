@@ -142,7 +142,7 @@ app.MapPost("/api/rooms/{roomId}/devices/{deviceId}/master", (string roomId, str
         if (!roomDevices.TryGetValue(roomId, out var devices)) return Results.NotFound(new { message = "Room not found." });
         var actorDevice = devices.FirstOrDefault(device => device.DeviceId == request.ActorDeviceId);
         if (actorDevice is null) return Results.NotFound(new { message = "Actor device not found in room." });
-        if (!actorDevice.IsMaster) return Results.Forbid();
+        if (!actorDevice.IsMaster) return Results.StatusCode(StatusCodes.Status403Forbidden);
 
         var targetDevice = devices.FirstOrDefault(device => device.DeviceId == deviceId);
         if (targetDevice is null) return Results.NotFound(new { message = "Target device not found in room." });

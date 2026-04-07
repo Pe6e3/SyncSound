@@ -160,6 +160,8 @@ export default {
     formatActivity(firstSeenUtc: number): string {
       const nowUnix = Math.floor(Date.now() / 1000)
       const diffSeconds = Math.max(0, nowUnix - firstSeenUtc)
+      if (diffSeconds < 60) return `${diffSeconds} сек`
+
       const minutes = Math.floor(diffSeconds / 60)
       if (minutes <= 90) return `${minutes} мин`
 
