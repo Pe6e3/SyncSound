@@ -31,20 +31,21 @@
           </button>
           <span v-else-if="isFirstJoined(device)" class="first-joined-badge" title="Первым присоединился">★</span>
 
-          <p v-if="device.displayName" class="device-name">{{ device.displayName }}</p>
+          <p class="device-name-row">
+            <span class="device-name-text">{{ device.displayName || "Имя не указано" }}</span>
+            <button
+              v-if="isCurrentDevice(device)"
+              class="name-edit-btn"
+              type="button"
+              title="Изменить имя"
+              @click="toggleNameEdit(device)"
+            >
+              ✎
+            </button>
+          </p>
           <p><strong>Присоединился:</strong> {{ formatUnix(device.firstSeenUtc) }} ({{ formatActivity(device.firstSeenUtc) }})</p>
           <p><strong>Timezone:</strong> {{ getTimezone(device.deviceInfo) }}</p>
           <p><strong>Тип устройства:</strong> {{ getDeviceType(device) }}</p>
-
-          <button
-            v-if="isCurrentDevice(device)"
-            class="edit-btn"
-            type="button"
-            title="Изменить имя"
-            @click="toggleNameEdit(device)"
-          >
-            ✎
-          </button>
 
           <div v-if="editingDeviceId === device.deviceId" class="inline-editor">
             <input
@@ -372,8 +373,14 @@ h2 {
   color: rgba(232, 236, 255, 0.5);
 }
 
-.device-name {
+.device-name-row {
   margin: 0 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.device-name-text {
   font-weight: 700;
   color: var(--brand-strong);
 }
@@ -402,17 +409,22 @@ h2 {
   cursor: pointer;
 }
 
-.edit-btn {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  width: 24px;
-  height: 24px;
+.name-edit-btn {
+  width: 22px;
+  height: 22px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: rgba(7, 23, 17, 0.85);
   color: var(--text-main);
   cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.device-name-row:hover .name-edit-btn {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .inline-editor {
