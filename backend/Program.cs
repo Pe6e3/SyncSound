@@ -720,7 +720,7 @@ static void ReplaceDevice(List<DeviceEntry> devices, DeviceEntry updatedDevice)
 
 static DeviceResponse MapDevice(DeviceEntry device, long audioRevision)
 {
-    var isAudioReady = audioRevision <= 0 || device.AudioReadyRevision >= audioRevision;
+    var isAudioReady = audioRevision > 0 && device.AudioReadyRevision >= audioRevision;
     return new DeviceResponse(
         device.DeviceId,
         device.DisplayName,
