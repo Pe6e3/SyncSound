@@ -435,7 +435,7 @@ export default {
         this.errorMessage = `Не удалось проверить воспроизведение: ${message}`
       }
     },
-    async sendConfirmAudioReadyViaWs() {
+    sendConfirmAudioReadyViaWs() {
       const revision = this.downloadedAudioRevision
       if (!this.currentDeviceId || revision <= 0) return
 
@@ -446,13 +446,14 @@ export default {
         return
       }
 
-      try {
-        const updatedRoom = await reportAudioReady(this.roomId, this.currentDeviceId, revision)
-        this.devices = updatedRoom.devices
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Неизвестная ошибка"
-        this.errorMessage = `Не удалось подтвердить готовность аудио: ${message}`
-      }
+      void reportAudioReady(this.roomId, this.currentDeviceId, revision)
+        .then(updatedRoom => {
+          this.devices = updatedRoom.devices
+        })
+        .catch(error => {
+          const message = error instanceof Error ? error.message : "Неизвестная ошибка"
+          this.errorMessage = `Не удалось подтвердить готовность аудио: ${message}`
+        })
     },
     async cacheAudioBlob(revision: number, blob: Blob) {
       const hasCacheStorage = typeof window !== "undefined" && "caches" in window
@@ -509,6 +510,7 @@ export default {
       } catch (error) {
         if (error instanceof DOMException && error.name === "NotAllowedError") {
           this.pendingPlayAfterUnlock = true
+          this.isAudioInteractionUnlocked = false
           this.audioStatusMessage = "iPhone блокирует автозапуск. Нажмите 'Активировать звук'."
           return
         }
@@ -529,19 +531,30 @@ export default {
     },
     async unlockAudioPlayback() {
       try {
-        const warmupAudio = new Audio("/api/audio/click")
-        warmupAudio.volume = 0
-        await warmupAudio.play()
-        warmupAudio.pause()
-        warmupAudio.currentTime = 0
-        this.isAudioInteractionUnlocked = true
-        this.audioStatusMessage = "Звук активирован."
-
         if (this.pendingUnlockForAudioReady) {
           this.pendingUnlockForAudioReady = false
-          await this.sendConfirmAudioReadyViaWs()
+          this.sendConfirmAudioReadyViaWs()
         }
-        if (this.pendingPlayAfterUnlock) await this.playRoomAudio()
+
+        const shouldPlayRoom = this.pendingPlayAfterUnlock
+        if (shouldPlayRoom) await this.playRoomAudio()
+
+        if (!this.pendingPlayAfterUnlock) {
+          this.isAudioInteractionUnlocked = true
+          this.audioStatusMessage = shouldPlayRoom ? "Воспроизведение запущено." : "Готовность к звуку подтверждена."
+        } else {
+          this.audioStatusMessage = "Не удалось начать воспроизведение. Нажмите «Активировать звук» ещё раз или коснитесь экрана."
+        }
+
+        const warmupAudio = new Audio("/api/audio/click")
+        warmupAudio.volume = 0
+        void warmupAudio
+          .play()
+          .then(() => {
+            warmupAudio.pause()
+            warmupAudio.currentTime = 0
+          })
+          .catch(() => {})
       } catch {
         this.audioStatusMessage = "Не удалось активировать звук. Повторите касание."
       }
