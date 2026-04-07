@@ -67,13 +67,14 @@ app.MapGet("/api/rooms/{roomId}", (string roomId) =>
 app.MapPost("/api/rooms/{roomId}/devices/register", (string roomId, RegisterDeviceRequest request) =>
 {
     if (!IsValidRoomId(roomId)) return Results.BadRequest(new { message = "Room ID must be 6 digits." });
-    if (!rooms.Contains(roomId)) return Results.NotFound(new { message = "Room not found." });
 
     var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     var normalizedDeviceInfo = NormalizeDeviceInfo(request.DeviceInfo);
 
     lock (syncRoot)
     {
+        if (!rooms.Contains(roomId)) rooms.Add(roomId);
+
         if (!roomDevices.TryGetValue(roomId, out var devices))
         {
             devices = new List<DeviceEntry>();
