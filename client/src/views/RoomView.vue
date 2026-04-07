@@ -96,7 +96,8 @@ export default {
       selectedAudioFile: null as File | null,
       isUploadingAudio: false,
       downloadedAudioRevision: 0,
-      audioStatusMessage: ""
+      audioStatusMessage: "",
+      audioObjectUrl: ""
     }
   },
   computed: {
@@ -323,10 +324,18 @@ export default {
       }
     },
     async cacheAudioBlob(revision: number, blob: Blob) {
-      const cache = await caches.open("syncsound-audio-cache")
-      const request = new Request(`/local-audio/${this.roomId}/${revision}`)
-      const response = new Response(blob)
-      await cache.put(request, response)
+      const hasCacheStorage = typeof window !== "undefined" && "caches" in window
+      if (hasCacheStorage) {
+        const cache = await window.caches.open("syncsound-audio-cache")
+        const request = new Request(`/local-audio/${this.roomId}/${revision}`)
+        const response = new Response(blob)
+        await cache.put(request, response)
+        return
+      }
+
+      // Fallback for browsers/environments without Cache Storage support.
+      if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
+      this.audioObjectUrl = URL.createObjectURL(blob)
     },
     goBackToRooms() {
       this.$router.push("/sound")
@@ -343,6 +352,7 @@ export default {
   beforeUnmount() {
     if (!this.timerId) return
     window.clearInterval(this.timerId)
+    if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
   },
   watch: {
     roomId() {
