@@ -42,7 +42,7 @@ export default {
 :root {
   color-scheme: dark;
   --bg-main: #06140f;
-  --bg-accent: #0b251b;
+  --bg-secondary: #0b251b;
   --surface: #113126;
   --surface-soft: #174133;
   --text-main: #e6f7ee;
@@ -66,7 +66,7 @@ body {
   background:
     radial-gradient(circle at top right, #1a5c42 0%, transparent 42%),
     radial-gradient(circle at bottom left, #0e3b2b 0%, transparent 38%),
-    var(--bg-main);
+    linear-gradient(145deg, var(--bg-main), var(--bg-secondary));
 }
 
 a {
@@ -77,6 +77,7 @@ button {
   font: inherit;
 }
 
+#app,
 .app-shell {
   min-height: 100vh;
 }
