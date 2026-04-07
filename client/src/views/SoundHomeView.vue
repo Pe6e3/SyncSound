@@ -7,9 +7,7 @@
 
       <section class="rooms">
         <h2>Список комнат</h2>
-        <p v-if="isLoading" class="hint">Загрузка...</p>
-
-        <ul v-else-if="rooms.length" class="room-list">
+        <ul v-if="rooms.length" class="room-list">
           <li v-for="room in rooms" :key="room.roomId">
             <button type="button" class="room-link" @click="openRoom(room.roomId)">
               <span>{{ room.roomId }}</span>
@@ -17,7 +15,7 @@
             </button>
           </li>
         </ul>
-
+        <p v-else-if="isLoading" class="hint">Загрузка...</p>
         <p v-else class="hint">Комнат пока нет</p>
       </section>
 
