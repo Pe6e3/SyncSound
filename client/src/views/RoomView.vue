@@ -19,7 +19,7 @@
           <span class="card-id">{{ device.deviceId }}</span>
 
           <button
-            class="role-dot"
+            :class="['role-dot', { 'role-dot--master': device.isMaster }]"
             type="button"
             :title="getRoleDotTitle(device)"
             :disabled="!canTransferMasterTo(device)"
@@ -415,6 +415,12 @@ h2 {
   color: transparent;
   background: rgba(156, 167, 217, 0.1);
   cursor: default;
+}
+
+.role-dot--master[disabled] {
+  border-color: rgba(255, 213, 106, 0.5);
+  color: #ffd56a;
+  background: rgba(255, 213, 106, 0.16);
 }
 
 .role-dot:not([disabled]) {
