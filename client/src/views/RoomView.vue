@@ -5,6 +5,13 @@
       <h1>Комната</h1>
       <p class="room-id">ID комнаты: {{ roomId }}</p>
       <p v-if="serverUnixSeconds" class="time">Время сервера: {{ serverUnixSeconds }}</p>
+      <div v-if="isCurrentMaster" class="audio-upload">
+        <input class="audio-input" type="file" accept="audio/*" @change="onAudioFileSelected" />
+        <button class="save-btn" type="button" :disabled="!selectedAudioFile || isUploadingAudio" @click="uploadAudioFile">
+          {{ isUploadingAudio ? "Загрузка..." : "Загрузить аудио" }}
+        </button>
+      </div>
+      <p v-if="audioStatusMessage" class="audio-status">{{ audioStatusMessage }}</p>
     </section>
 
     <section class="panel">
@@ -66,7 +73,7 @@
 <script lang="ts">
 import { collectDeviceInfo } from "@/utils/deviceInfo"
 import { getServerTimeSeconds } from "@/api/timeApi"
-import { getRoom, registerDevice, transferMaster, updateDeviceName, type DeviceResponse } from "@/api/roomApi"
+import { downloadRoomAudio, getRoom, registerDevice, transferMaster, updateDeviceName, uploadRoomAudio, type DeviceResponse, type RoomDetailsResponse } from "@/api/roomApi"
 
 const LOCAL_DEVICE_ID_KEY = "syncsound-device-id"
 
@@ -85,7 +92,11 @@ export default {
       devices: [] as DeviceResponse[],
       currentDeviceId: "",
       displayNameInput: "",
-      editingDeviceId: ""
+      editingDeviceId: "",
+      selectedAudioFile: null as File | null,
+      isUploadingAudio: false,
+      downloadedAudioRevision: 0,
+      audioStatusMessage: ""
     }
   },
   computed: {
@@ -112,6 +123,7 @@ export default {
         this.currentDeviceId = response.deviceId
         window.localStorage.setItem(LOCAL_DEVICE_ID_KEY, response.deviceId)
         this.devices = response.room.devices
+        await this.syncAudioState(response.room)
 
         const currentDevice = this.devices.find(device => device.deviceId === response.deviceId)
         this.displayNameInput = currentDevice?.displayName ?? ""
@@ -126,6 +138,7 @@ export default {
       try {
         const room = await getRoom(this.roomId)
         this.devices = room.devices
+        await this.syncAudioState(room)
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Не удалось обновить комнату: ${message}`
@@ -267,11 +280,53 @@ export default {
       try {
         const room = await transferMaster(this.roomId, device.deviceId, this.currentDeviceId)
         this.devices = room.devices
+        await this.syncAudioState(room)
         this.errorMessage = ""
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Не удалось передать мастера: ${message}`
       }
+    },
+    onAudioFileSelected(event: Event) {
+      const input = event.target as HTMLInputElement
+      this.selectedAudioFile = input.files?.[0] ?? null
+    },
+    async uploadAudioFile() {
+      if (!this.currentDeviceId || !this.selectedAudioFile) return
+
+      this.isUploadingAudio = true
+      try {
+        const room = await uploadRoomAudio(this.roomId, this.currentDeviceId, this.selectedAudioFile)
+        this.devices = room.devices
+        await this.syncAudioState(room)
+        this.audioStatusMessage = `Файл ${this.selectedAudioFile.name} загружен`
+        this.selectedAudioFile = null
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Неизвестная ошибка"
+        this.errorMessage = `Не удалось загрузить аудио: ${message}`
+      } finally {
+        this.isUploadingAudio = false
+      }
+    },
+    async syncAudioState(room: RoomDetailsResponse) {
+      if (!room.audio.hasAudio) return
+      if (room.audio.revision <= this.downloadedAudioRevision) return
+
+      try {
+        const blob = await downloadRoomAudio(this.roomId)
+        await this.cacheAudioBlob(room.audio.revision, blob)
+        this.downloadedAudioRevision = room.audio.revision
+        if (room.audio.fileName) this.audioStatusMessage = `Аудио локально: ${room.audio.fileName}`
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Неизвестная ошибка"
+        this.errorMessage = `Не удалось скачать аудио: ${message}`
+      }
+    },
+    async cacheAudioBlob(revision: number, blob: Blob) {
+      const cache = await caches.open("syncsound-audio-cache")
+      const request = new Request(`/local-audio/${this.roomId}/${revision}`)
+      const response = new Response(blob)
+      await cache.put(request, response)
     },
     goBackToRooms() {
       this.$router.push("/sound")
@@ -466,6 +521,24 @@ h2 {
   margin: 0;
   font-weight: 700;
   color: var(--brand-strong);
+}
+
+.audio-upload {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.audio-input {
+  max-width: 320px;
+}
+
+.audio-status {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .name-input {

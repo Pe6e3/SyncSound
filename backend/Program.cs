@@ -4,8 +4,10 @@ using System.Text.Json.Serialization;
 var builder = WebApplication.CreateBuilder(args);
 var rooms = new HashSet<string> { "123456", "654321" };
 var roomDevices = rooms.ToDictionary(roomId => roomId, _ => new List<DeviceEntry>());
+var roomAudioStates = rooms.ToDictionary(roomId => roomId, _ => new RoomAudioState(null, 0, null));
 var syncRoot = new object();
 var versionFilePath = Environment.GetEnvironmentVariable("VERSION_FILE_PATH") ?? "/app/data/version.json";
+var audioBaseDirectory = Environment.GetEnvironmentVariable("AUDIO_STORAGE_PATH") ?? "/app/data/audio";
 EnsureVersionFile(versionFilePath);
 
 builder.Services.AddCors(options =>
@@ -55,6 +57,7 @@ app.MapPost("/api/rooms", () =>
     var roomId = GenerateRoomId(rooms);
     rooms.Add(roomId);
     roomDevices[roomId] = new List<DeviceEntry>();
+    roomAudioStates[roomId] = new RoomAudioState(null, 0, null);
     return Results.Ok(new { roomId });
 });
 
@@ -67,7 +70,7 @@ app.MapGet("/api/rooms/{roomId}", (string roomId) =>
     lock (syncRoot)
     {
         var devices = roomDevices.TryGetValue(roomId, out var value) ? value : new List<DeviceEntry>();
-        return Results.Ok(new RoomDetailsResponse(roomId, devices.Select(MapDevice).ToList()));
+        return Results.Ok(BuildRoomResponse(roomId, devices, roomAudioStates));
     }
 });
 
@@ -87,6 +90,7 @@ app.MapPost("/api/rooms/{roomId}/devices/register", (string roomId, RegisterDevi
             devices = new List<DeviceEntry>();
             roomDevices[roomId] = devices;
         }
+        if (!roomAudioStates.ContainsKey(roomId)) roomAudioStates[roomId] = new RoomAudioState(null, 0, null);
 
         var existingDevice = devices.FirstOrDefault(device => device.DeviceId == request.DeviceId);
         if (existingDevice is null)
@@ -101,7 +105,7 @@ app.MapPost("/api/rooms/{roomId}/devices/register", (string roomId, RegisterDevi
                 !devices.Any(device => device.IsMaster)
             );
             devices.Add(newDevice);
-            return Results.Ok(new RegisterDeviceResponse(deviceId, new RoomDetailsResponse(roomId, devices.Select(MapDevice).ToList())));
+            return Results.Ok(new RegisterDeviceResponse(deviceId, BuildRoomResponse(roomId, devices, roomAudioStates)));
         }
 
         var updatedDevice = existingDevice with
@@ -111,7 +115,7 @@ app.MapPost("/api/rooms/{roomId}/devices/register", (string roomId, RegisterDevi
             DeviceInfo = normalizedDeviceInfo
         };
         ReplaceDevice(devices, updatedDevice);
-        return Results.Ok(new RegisterDeviceResponse(updatedDevice.DeviceId, new RoomDetailsResponse(roomId, devices.Select(MapDevice).ToList())));
+        return Results.Ok(new RegisterDeviceResponse(updatedDevice.DeviceId, BuildRoomResponse(roomId, devices, roomAudioStates)));
     }
 });
 
@@ -134,7 +138,7 @@ app.MapPatch("/api/rooms/{roomId}/devices/{deviceId}/name", (string roomId, stri
         };
         ReplaceDevice(devices, updatedDevice);
 
-        return Results.Ok(new RoomDetailsResponse(roomId, devices.Select(MapDevice).ToList()));
+        return Results.Ok(BuildRoomResponse(roomId, devices, roomAudioStates));
     }
 });
 
@@ -161,9 +165,117 @@ app.MapPost("/api/rooms/{roomId}/devices/{deviceId}/master", (string roomId, str
             devices[index] = devices[index] with { IsMaster = isTarget };
         }
 
-        return Results.Ok(new RoomDetailsResponse(roomId, devices.Select(MapDevice).ToList()));
+        return Results.Ok(BuildRoomResponse(roomId, devices, roomAudioStates));
     }
 });
+
+app.MapPost("/api/rooms/{roomId}/audio", async (string roomId, HttpRequest request) =>
+{
+    if (!IsValidRoomId(roomId)) return Results.BadRequest(new { message = "Room ID must be 6 digits." });
+    if (!rooms.Contains(roomId)) return Results.NotFound(new { message = "Room not found." });
+
+    var form = await request.ReadFormAsync();
+    var actorDeviceId = form["actorDeviceId"].ToString();
+    var file = form.Files.GetFile("file");
+
+    if (!IsValidDeviceId(actorDeviceId)) return Results.BadRequest(new { message = "Actor device ID is invalid." });
+    if (file is null || file.Length == 0) return Results.BadRequest(new { message = "Audio file is required." });
+
+    lock (syncRoot)
+    {
+        if (!roomDevices.TryGetValue(roomId, out var devices)) return Results.NotFound(new { message = "Room not found." });
+        var actorDevice = devices.FirstOrDefault(device => device.DeviceId == actorDeviceId);
+        if (actorDevice is null) return Results.NotFound(new { message = "Actor device not found in room." });
+        if (!actorDevice.IsMaster) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var extension = Path.GetExtension(file.FileName);
+    if (string.IsNullOrWhiteSpace(extension) || extension.Length > 10) extension = ".bin";
+
+    RoomAudioState updatedAudioState;
+    var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    string outputPath;
+
+    lock (syncRoot)
+    {
+        if (!roomAudioStates.TryGetValue(roomId, out var currentAudio)) currentAudio = new RoomAudioState(null, 0, null);
+        var nextRevision = currentAudio.Revision + 1;
+        var fileName = $"audio-r{nextRevision}{extension.ToLowerInvariant()}";
+        var roomDirectory = Path.Combine(audioBaseDirectory, roomId);
+        Directory.CreateDirectory(roomDirectory);
+
+        foreach (var path in Directory.GetFiles(roomDirectory)) File.Delete(path);
+
+        outputPath = Path.Combine(roomDirectory, fileName);
+        updatedAudioState = new RoomAudioState(fileName, nextRevision, nowUnix);
+        roomAudioStates[roomId] = updatedAudioState;
+    }
+
+    using (var stream = File.Create(outputPath))
+    {
+        await file.CopyToAsync(stream);
+    }
+
+    lock (syncRoot)
+    {
+        var devices = roomDevices.TryGetValue(roomId, out var value) ? value : new List<DeviceEntry>();
+        return Results.Ok(BuildRoomResponse(roomId, devices, roomAudioStates));
+    }
+});
+
+app.MapGet("/api/rooms/{roomId}/audio", (string roomId) =>
+{
+    if (!IsValidRoomId(roomId)) return Results.BadRequest(new { message = "Room ID must be 6 digits." });
+    if (!rooms.Contains(roomId)) return Results.NotFound(new { message = "Room not found." });
+
+    RoomAudioState audioState;
+    lock (syncRoot)
+    {
+        if (!roomAudioStates.TryGetValue(roomId, out audioState!)) return Results.NotFound(new { message = "Audio not found." });
+    }
+
+    if (string.IsNullOrWhiteSpace(audioState.FileName)) return Results.NotFound(new { message = "Audio not found." });
+
+    var path = Path.Combine(audioBaseDirectory, roomId, audioState.FileName);
+    if (!File.Exists(path)) return Results.NotFound(new { message = "Audio not found." });
+
+    var contentType = GetContentTypeByExtension(Path.GetExtension(path));
+    return Results.File(path, contentType, audioState.FileName);
+});
+
+static RoomDetailsResponse BuildRoomResponse(
+    string roomId,
+    List<DeviceEntry> devices,
+    Dictionary<string, RoomAudioState> roomAudioStates
+)
+{
+    var mappedDevices = devices.Select(MapDevice).ToList();
+    roomAudioStates.TryGetValue(roomId, out var audioState);
+    var audio = MapRoomAudio(audioState);
+    return new RoomDetailsResponse(roomId, mappedDevices, audio);
+}
+
+static RoomAudioResponse MapRoomAudio(RoomAudioState? audioState)
+{
+    if (audioState is null || string.IsNullOrWhiteSpace(audioState.FileName))
+        return new RoomAudioResponse(false, null, 0, null);
+
+    return new RoomAudioResponse(true, audioState.FileName, audioState.Revision, audioState.UpdatedAtUtc);
+}
+
+static string GetContentTypeByExtension(string extension)
+{
+    return extension.ToLowerInvariant() switch
+    {
+        ".mp3" => "audio/mpeg",
+        ".wav" => "audio/wav",
+        ".ogg" => "audio/ogg",
+        ".aac" => "audio/aac",
+        ".m4a" => "audio/mp4",
+        ".flac" => "audio/flac",
+        _ => "application/octet-stream"
+    };
+}
 
 app.Run();
 
@@ -274,6 +386,7 @@ record RegisterDeviceRequest(
 
 record UpdateDeviceNameRequest([property: JsonPropertyName("displayName")] string? DisplayName);
 record ChangeMasterRequest([property: JsonPropertyName("actorDeviceId")] string ActorDeviceId);
+record RoomAudioState(string? FileName, long Revision, long? UpdatedAtUtc);
 
 record DeviceEntry(
     string DeviceId,
@@ -291,7 +404,15 @@ record RegisterDeviceResponse(
 
 record RoomDetailsResponse(
     [property: JsonPropertyName("roomId")] string RoomId,
-    [property: JsonPropertyName("devices")] List<DeviceResponse> Devices
+    [property: JsonPropertyName("devices")] List<DeviceResponse> Devices,
+    [property: JsonPropertyName("audio")] RoomAudioResponse Audio
+);
+
+record RoomAudioResponse(
+    [property: JsonPropertyName("hasAudio")] bool HasAudio,
+    [property: JsonPropertyName("fileName")] string? FileName,
+    [property: JsonPropertyName("revision")] long Revision,
+    [property: JsonPropertyName("updatedAtUtc")] long? UpdatedAtUtc
 );
 
 record DeviceResponse(
