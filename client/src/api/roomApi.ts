@@ -12,6 +12,7 @@ export type DeviceResponse = {
   firstSeenUtc: number
   lastSeenUtc: number
   deviceInfo: Record<string, string>
+  isMaster: boolean
 }
 
 export type RoomDetailsResponse = {
@@ -79,6 +80,19 @@ export async function updateDeviceName(roomId: string, deviceId: string, display
       "Content-Type": "application/json"
     },
     body: JSON.stringify({ displayName })
+  })
+
+  if (!response.ok) throw new Error(`Request failed with status ${response.status}`)
+  return (await response.json()) as RoomDetailsResponse
+}
+
+export async function transferMaster(roomId: string, targetDeviceId: string, actorDeviceId: string): Promise<RoomDetailsResponse> {
+  const response = await fetch(`/api/rooms/${roomId}/devices/${targetDeviceId}/master`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ actorDeviceId })
   })
 
   if (!response.ok) throw new Error(`Request failed with status ${response.status}`)

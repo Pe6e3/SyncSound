@@ -5,32 +5,58 @@
       <h1>Комната</h1>
       <p class="room-id">ID комнаты: {{ roomId }}</p>
       <p v-if="serverUnixSeconds" class="time">Время сервера: {{ serverUnixSeconds }}</p>
-
-      <div class="name-editor">
-        <label class="name-label" for="device-name-input">Имя для этого устройства</label>
-        <input
-          id="device-name-input"
-          v-model="displayNameInput"
-          class="name-input"
-          type="text"
-          maxlength="50"
-          placeholder="Например: Алекс - ноутбук"
-        />
-        <button class="save-btn" type="button" @click="saveDisplayName">Сохранить имя</button>
-      </div>
     </section>
 
     <section class="panel">
       <h2>Устройства в комнате</h2>
-      <p v-if="!devices.length" class="empty-label">Пока нет данных об устройствах</p>
+      <p v-if="!orderedDevices.length" class="empty-label">Пока нет данных об устройствах</p>
       <ul v-else class="devices-list">
-        <li v-for="device in devices" :key="device.deviceId" class="device-card">
-          <p><strong>ID:</strong> {{ device.deviceId }}</p>
-          <p><strong>Имя:</strong> {{ device.displayName || "Не задано" }}</p>
-          <p><strong>Первый вход:</strong> {{ formatUnix(device.firstSeenUtc) }}</p>
-          <p><strong>Продолжительность активности:</strong> {{ formatActivity(device.firstSeenUtc, device.lastSeenUtc) }}</p>
+        <li
+          v-for="device in orderedDevices"
+          :key="device.deviceId"
+          :class="['device-card', { 'device-card--self': isCurrentDevice(device) }]"
+          @mouseenter="hoveredDeviceId = device.deviceId"
+          @mouseleave="hoveredDeviceId = ''"
+        >
+          <span class="card-id">{{ device.deviceId }}</span>
+
+          <button
+            v-if="showTransferMasterButton(device)"
+            class="master-transfer-btn"
+            type="button"
+            title="Передать мастера"
+            @click="transferMasterTo(device)"
+          >
+            ★
+          </button>
+          <span v-else-if="isFirstJoined(device)" class="first-joined-badge" title="Первым присоединился">★</span>
+
+          <p v-if="device.displayName" class="device-name">{{ device.displayName }}</p>
+          <p><strong>Присоединился:</strong> {{ formatUnix(device.firstSeenUtc) }} ({{ formatActivity(device.firstSeenUtc, device.lastSeenUtc) }})</p>
           <p><strong>Timezone:</strong> {{ getTimezone(device.deviceInfo) }}</p>
           <p><strong>Тип устройства:</strong> {{ getDeviceType(device) }}</p>
+          <p v-if="device.isMaster" class="master-label">Мастер комнаты</p>
+
+          <button
+            v-if="isCurrentDevice(device)"
+            class="edit-btn"
+            type="button"
+            title="Изменить имя"
+            @click="toggleNameEdit(device)"
+          >
+            ✎
+          </button>
+
+          <div v-if="editingDeviceId === device.deviceId" class="inline-editor">
+            <input
+              v-model="displayNameInput"
+              class="name-input"
+              type="text"
+              maxlength="50"
+              placeholder="Введите имя"
+            />
+            <button class="save-btn" type="button" @click="saveDisplayName">Сохранить</button>
+          </div>
         </li>
       </ul>
     </section>
@@ -42,7 +68,7 @@
 <script lang="ts">
 import { collectDeviceInfo } from "@/utils/deviceInfo"
 import { getServerTimeSeconds } from "@/api/timeApi"
-import { getRoom, registerDevice, updateDeviceName, type DeviceResponse } from "@/api/roomApi"
+import { getRoom, registerDevice, transferMaster, updateDeviceName, type DeviceResponse } from "@/api/roomApi"
 
 const LOCAL_DEVICE_ID_KEY = "syncsound-device-id"
 
@@ -60,7 +86,20 @@ export default {
       timerId: 0 as number,
       devices: [] as DeviceResponse[],
       currentDeviceId: "",
-      displayNameInput: ""
+      displayNameInput: "",
+      editingDeviceId: "",
+      hoveredDeviceId: ""
+    }
+  },
+  computed: {
+    orderedDevices(): DeviceResponse[] {
+      return [...this.devices].sort((left, right) => left.firstSeenUtc - right.firstSeenUtc)
+    },
+    currentDevice(): DeviceResponse | undefined {
+      return this.devices.find(device => device.deviceId == this.currentDeviceId)
+    },
+    isCurrentMaster(): boolean {
+      return Boolean(this.currentDevice?.isMaster)
     }
   },
   methods: {
@@ -79,6 +118,7 @@ export default {
 
         const currentDevice = this.devices.find(device => device.deviceId === response.deviceId)
         this.displayNameInput = currentDevice?.displayName ?? ""
+        this.editingDeviceId = ""
         this.errorMessage = ""
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
@@ -107,6 +147,7 @@ export default {
       try {
         const room = await updateDeviceName(this.roomId, this.currentDeviceId, this.displayNameInput)
         this.devices = room.devices
+        this.editingDeviceId = ""
         this.errorMessage = ""
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
@@ -192,6 +233,41 @@ export default {
       if (ua.includes("macintosh") || ua.includes("windows") || ua.includes("linux")) return "ПК/Ноутбук"
       return "Неизвестно"
     },
+    isCurrentDevice(device: DeviceResponse): boolean {
+      return device.deviceId == this.currentDeviceId
+    },
+    toggleNameEdit(device: DeviceResponse) {
+      if (!this.isCurrentDevice(device)) return
+      const shouldOpen = this.editingDeviceId != device.deviceId
+      this.editingDeviceId = shouldOpen ? device.deviceId : ""
+      this.displayNameInput = device.displayName ?? ""
+    },
+    isFirstJoined(device: DeviceResponse): boolean {
+      if (!this.devices.length) return false
+      const firstTimestamp = Math.min(...this.devices.map(entry => entry.firstSeenUtc))
+      if (device.firstSeenUtc != firstTimestamp) return false
+      const firstDevice = this.orderedDevices[0]
+      if (!firstDevice) return false
+      return firstDevice.deviceId == device.deviceId
+    },
+    showTransferMasterButton(device: DeviceResponse): boolean {
+      if (!this.isCurrentMaster) return false
+      if (this.isCurrentDevice(device)) return false
+      if (device.isMaster) return false
+      return this.hoveredDeviceId == device.deviceId
+    },
+    async transferMasterTo(device: DeviceResponse) {
+      if (!this.currentDeviceId) return
+
+      try {
+        const room = await transferMaster(this.roomId, device.deviceId, this.currentDeviceId)
+        this.devices = room.devices
+        this.errorMessage = ""
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Неизвестная ошибка"
+        this.errorMessage = `Не удалось передать мастера: ${message}`
+      }
+    },
     goBackToRooms() {
       this.$router.push("/sound")
     }
@@ -267,37 +343,6 @@ h2 {
   background: rgba(20, 51, 40, 0.9);
 }
 
-.name-editor {
-  margin-top: 14px;
-  display: grid;
-  gap: 8px;
-}
-
-.name-label {
-  text-align: left;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.name-input {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  background: rgba(7, 23, 17, 0.75);
-  color: var(--text-main);
-}
-
-.save-btn {
-  justify-self: start;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 14px;
-  background: linear-gradient(180deg, var(--brand-strong), var(--brand));
-  color: #052317;
-  cursor: pointer;
-  font-weight: 600;
-}
-
 .devices-list {
   list-style: none;
   margin: 0;
@@ -307,14 +352,83 @@ h2 {
 }
 
 .device-card {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 12px 14px;
+  padding: 16px 14px 32px;
   background: rgba(15, 41, 31, 0.58);
+}
+
+.device-card--self {
+  border-color: rgba(78, 228, 173, 0.7);
+  box-shadow: 0 0 0 1px rgba(78, 228, 173, 0.25), 0 10px 24px rgba(7, 34, 23, 0.4);
 }
 
 .device-card p {
   margin: 0 0 7px;
+}
+
+.card-id {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  font-size: 12px;
+  color: rgba(232, 236, 255, 0.5);
+}
+
+.device-name {
+  margin: 0 0 8px;
+  font-weight: 700;
+  color: var(--brand-strong);
+}
+
+.master-label {
+  margin: 4px 0 0;
+  color: #ffd56a;
+  font-weight: 600;
+}
+
+.first-joined-badge,
+.master-transfer-btn {
+  position: absolute;
+  left: 10px;
+  top: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+}
+
+.first-joined-badge {
+  color: #ffd56a;
+  background: rgba(255, 213, 106, 0.16);
+}
+
+.master-transfer-btn {
+  border: 1px solid rgba(255, 213, 106, 0.5);
+  color: #ffd56a;
+  background: rgba(29, 20, 4, 0.9);
+  cursor: pointer;
+}
+
+.edit-btn {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(7, 23, 17, 0.85);
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.inline-editor {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
 }
 
 .empty-label {
@@ -330,5 +444,24 @@ h2 {
   margin: 0;
   font-weight: 700;
   color: var(--brand-strong);
+}
+
+.name-input {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(7, 23, 17, 0.75);
+  color: var(--text-main);
+}
+
+.save-btn {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: linear-gradient(180deg, var(--brand-strong), var(--brand));
+  color: #052317;
+  cursor: pointer;
+  font-weight: 600;
 }
 </style>

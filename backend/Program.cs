@@ -89,7 +89,8 @@ app.MapPost("/api/rooms/{roomId}/devices/register", (string roomId, RegisterDevi
                 NormalizeDisplayName(request.DisplayName),
                 nowUnix,
                 nowUnix,
-                normalizedDeviceInfo
+                normalizedDeviceInfo,
+                !devices.Any(device => device.IsMaster)
             );
             devices.Add(newDevice);
             return Results.Ok(new RegisterDeviceResponse(deviceId, new RoomDetailsResponse(roomId, devices.Select(MapDevice).ToList())));
@@ -124,6 +125,33 @@ app.MapPatch("/api/rooms/{roomId}/devices/{deviceId}/name", (string roomId, stri
             LastSeenUtc = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         };
         ReplaceDevice(devices, updatedDevice);
+
+        return Results.Ok(new RoomDetailsResponse(roomId, devices.Select(MapDevice).ToList()));
+    }
+});
+
+app.MapPost("/api/rooms/{roomId}/devices/{deviceId}/master", (string roomId, string deviceId, ChangeMasterRequest request) =>
+{
+    if (!IsValidRoomId(roomId)) return Results.BadRequest(new { message = "Room ID must be 6 digits." });
+    if (!rooms.Contains(roomId)) return Results.NotFound(new { message = "Room not found." });
+    if (!IsValidDeviceId(deviceId)) return Results.BadRequest(new { message = "Device ID is invalid." });
+    if (!IsValidDeviceId(request.ActorDeviceId)) return Results.BadRequest(new { message = "Actor device ID is invalid." });
+
+    lock (syncRoot)
+    {
+        if (!roomDevices.TryGetValue(roomId, out var devices)) return Results.NotFound(new { message = "Room not found." });
+        var actorDevice = devices.FirstOrDefault(device => device.DeviceId == request.ActorDeviceId);
+        if (actorDevice is null) return Results.NotFound(new { message = "Actor device not found in room." });
+        if (!actorDevice.IsMaster) return Results.Forbid();
+
+        var targetDevice = devices.FirstOrDefault(device => device.DeviceId == deviceId);
+        if (targetDevice is null) return Results.NotFound(new { message = "Target device not found in room." });
+
+        for (var index = 0; index < devices.Count; index++)
+        {
+            var isTarget = devices[index].DeviceId == deviceId;
+            devices[index] = devices[index] with { IsMaster = isTarget };
+        }
 
         return Results.Ok(new RoomDetailsResponse(roomId, devices.Select(MapDevice).ToList()));
     }
@@ -197,7 +225,8 @@ static DeviceResponse MapDevice(DeviceEntry device)
         device.DisplayName,
         device.FirstSeenUtc,
         device.LastSeenUtc,
-        device.DeviceInfo
+        device.DeviceInfo,
+        device.IsMaster
     );
 }
 
@@ -236,13 +265,15 @@ record RegisterDeviceRequest(
 );
 
 record UpdateDeviceNameRequest([property: JsonPropertyName("displayName")] string? DisplayName);
+record ChangeMasterRequest([property: JsonPropertyName("actorDeviceId")] string ActorDeviceId);
 
 record DeviceEntry(
     string DeviceId,
     string? DisplayName,
     long FirstSeenUtc,
     long LastSeenUtc,
-    Dictionary<string, string> DeviceInfo
+    Dictionary<string, string> DeviceInfo,
+    bool IsMaster
 );
 
 record RegisterDeviceResponse(
@@ -260,5 +291,6 @@ record DeviceResponse(
     [property: JsonPropertyName("displayName")] string? DisplayName,
     [property: JsonPropertyName("firstSeenUtc")] long FirstSeenUtc,
     [property: JsonPropertyName("lastSeenUtc")] long LastSeenUtc,
-    [property: JsonPropertyName("deviceInfo")] Dictionary<string, string> DeviceInfo
+    [property: JsonPropertyName("deviceInfo")] Dictionary<string, string> DeviceInfo,
+    [property: JsonPropertyName("isMaster")] bool IsMaster
 );
