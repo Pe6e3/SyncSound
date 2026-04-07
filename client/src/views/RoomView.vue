@@ -400,7 +400,7 @@ export default {
 
       try {
         const blob = await downloadRoomAudio(this.roomId)
-        await this.cacheAudioBlob(room.audio.revision, blob)
+        await this.cacheAudioBlob(room.audio.revision, blob, room.audio.fileName ?? undefined)
         this.downloadedAudioRevision = room.audio.revision
         if (this.currentDeviceId) await this.probePlaybackThenReportReady(room.audio.revision)
         await this.playClick()
@@ -455,8 +455,22 @@ export default {
           this.errorMessage = `Не удалось подтвердить готовность аудио: ${message}`
         })
     },
-    async cacheAudioBlob(revision: number, blob: Blob | ArrayBuffer | Uint8Array | string | unknown) {
-      const normalizedBlob = blob instanceof Blob ? blob : new Blob([blob as BlobPart])
+    getAudioMimeType(fileName?: string): string {
+      if (!fileName) return ""
+      const extension = fileName.toLowerCase().split(".").pop() ?? ""
+      if (extension === "mp3") return "audio/mpeg"
+      if (extension === "wav") return "audio/wav"
+      if (extension === "ogg") return "audio/ogg"
+      if (extension === "aac") return "audio/aac"
+      if (extension === "m4a") return "audio/mp4"
+      if (extension === "flac") return "audio/flac"
+      return ""
+    },
+    async cacheAudioBlob(revision: number, blob: Blob | ArrayBuffer | Uint8Array | string | unknown, fileName?: string) {
+      const fallbackMimeType = this.getAudioMimeType(fileName)
+      let normalizedBlob = blob instanceof Blob ? blob : new Blob([blob as BlobPart], fallbackMimeType ? { type: fallbackMimeType } : undefined)
+      if (normalizedBlob instanceof Blob && !normalizedBlob.type && fallbackMimeType)
+        normalizedBlob = new Blob([normalizedBlob], { type: fallbackMimeType })
       const hasCacheStorage = typeof window !== "undefined" && "caches" in window
       if (hasCacheStorage) {
         const cache = await window.caches.open("syncsound-audio-cache")
