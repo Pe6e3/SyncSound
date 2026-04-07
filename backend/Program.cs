@@ -37,10 +37,17 @@ app.MapGet("/api/version", () =>
 
 app.MapGet("/api/rooms", () =>
 {
-    var items = rooms
-        .OrderBy(id => id)
-        .Select(id => new { roomId = id });
-    return Results.Ok(items);
+    lock (syncRoot)
+    {
+        var items = rooms
+            .OrderBy(id => id)
+            .Select(id =>
+            {
+                var count = roomDevices.TryGetValue(id, out var devices) ? devices.Count : 0;
+                return new { roomId = id, deviceCount = count };
+            });
+        return Results.Ok(items);
+    }
 });
 
 app.MapPost("/api/rooms", () =>

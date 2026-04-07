@@ -15,22 +15,18 @@
           v-for="device in orderedDevices"
           :key="device.deviceId"
           :class="['device-card', { 'device-card--self': isCurrentDevice(device) }]"
-          @mouseenter="hoveredDeviceId = device.deviceId"
-          @mouseleave="hoveredDeviceId = ''"
         >
           <span class="card-id">{{ device.deviceId }}</span>
 
           <button
-            v-if="showTransferMasterButton(device)"
-            class="master-transfer-btn"
+            class="role-dot"
             type="button"
-            title="Передать мастера"
-            @click="transferMasterTo(device)"
+            :title="getRoleDotTitle(device)"
+            :disabled="!canTransferMasterTo(device)"
+            @click="handleRoleDotClick(device)"
           >
-            ★
+            <span v-if="device.isMaster">★</span>
           </button>
-          <span v-else-if="device.isMaster" class="master-badge" title="Мастер комнаты">★</span>
-          <span v-else-if="isFirstJoined(device)" class="first-joined-badge" title="Первым присоединился">✦</span>
 
           <p class="device-name-row">
             <span class="device-name-text">{{ device.displayName || "Имя не указано" }}</span>
@@ -89,8 +85,7 @@ export default {
       devices: [] as DeviceResponse[],
       currentDeviceId: "",
       displayNameInput: "",
-      editingDeviceId: "",
-      hoveredDeviceId: ""
+      editingDeviceId: ""
     }
   },
   computed: {
@@ -251,19 +246,20 @@ export default {
         input.select()
       })
     },
-    isFirstJoined(device: DeviceResponse): boolean {
-      if (!this.devices.length) return false
-      const firstTimestamp = Math.min(...this.devices.map(entry => entry.firstSeenUtc))
-      if (device.firstSeenUtc != firstTimestamp) return false
-      const firstDevice = this.orderedDevices[0]
-      if (!firstDevice) return false
-      return firstDevice.deviceId == device.deviceId
-    },
-    showTransferMasterButton(device: DeviceResponse): boolean {
+    canTransferMasterTo(device: DeviceResponse): boolean {
       if (!this.isCurrentMaster) return false
       if (this.isCurrentDevice(device)) return false
       if (device.isMaster) return false
-      return this.hoveredDeviceId == device.deviceId
+      return true
+    },
+    getRoleDotTitle(device: DeviceResponse): string {
+      if (device.isMaster) return "Мастер комнаты"
+      if (this.canTransferMasterTo(device)) return "Передать мастера этому устройству"
+      return "Не мастер"
+    },
+    handleRoleDotClick(device: DeviceResponse) {
+      if (!this.canTransferMasterTo(device)) return
+      this.transferMasterTo(device)
     },
     async transferMasterTo(device: DeviceResponse) {
       if (!this.currentDeviceId) return
@@ -397,9 +393,7 @@ h2 {
   color: var(--brand-strong);
 }
 
-.master-badge,
-.first-joined-badge,
-.master-transfer-btn {
+.role-dot {
   position: absolute;
   left: 10px;
   top: 8px;
@@ -408,23 +402,24 @@ h2 {
   border-radius: 999px;
   display: grid;
   place-items: center;
-}
-
-.master-badge {
-  color: #ffd56a;
-  background: rgba(255, 213, 106, 0.16);
-}
-
-.first-joined-badge {
-  color: #b7f2de;
-  background: rgba(38, 129, 97, 0.2);
-}
-
-.master-transfer-btn {
   border: 1px solid rgba(255, 213, 106, 0.5);
   color: #ffd56a;
   background: rgba(29, 20, 4, 0.9);
   cursor: pointer;
+  line-height: 1;
+  font-size: 13px;
+}
+
+.role-dot[disabled] {
+  border-color: rgba(156, 167, 217, 0.35);
+  color: transparent;
+  background: rgba(156, 167, 217, 0.1);
+  cursor: default;
+}
+
+.role-dot:not([disabled]) {
+  color: #ffd56a;
+  background: rgba(255, 213, 106, 0.16);
 }
 
 .name-edit-btn {

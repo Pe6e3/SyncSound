@@ -12,9 +12,10 @@
         <p v-if="isLoading" class="hint">Загрузка...</p>
 
         <ul v-else-if="rooms.length" class="room-list">
-          <li v-for="roomId in rooms" :key="roomId">
-            <button type="button" class="room-link" @click="openRoom(roomId)">
-              {{ roomId }}
+          <li v-for="room in rooms" :key="room.roomId">
+            <button type="button" class="room-link" @click="openRoom(room.roomId)">
+              <span>{{ room.roomId }}</span>
+              <span class="room-count">{{ room.deviceCount }} устройств</span>
             </button>
           </li>
         </ul>
@@ -28,14 +29,14 @@
 </template>
 
 <script lang="ts">
-import { createRoom, getRooms } from "@/api/roomApi"
+import { createRoom, getRooms, type RoomListItem } from "@/api/roomApi"
 
 export default {
   data() {
     return {
       errorMessage: "",
       isLoading: false,
-      rooms: [] as string[],
+      rooms: [] as RoomListItem[],
       refreshTimerId: 0 as number
     }
   },
@@ -169,6 +170,10 @@ h2 {
 
 .room-link {
   width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
@@ -176,6 +181,11 @@ h2 {
   color: var(--text-main);
   cursor: pointer;
   transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.room-count {
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .room-link:hover {

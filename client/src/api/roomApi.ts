@@ -4,6 +4,7 @@ export type CreateRoomResponse = {
 
 export type RoomResponse = {
   roomId: string
+  deviceCount: number
 }
 
 export type DeviceResponse = {
@@ -31,14 +32,18 @@ export type RegisterDeviceResponse = {
   room: RoomDetailsResponse
 }
 
-export async function getRooms(): Promise<string[]> {
+export type RoomListItem = {
+  roomId: string
+  deviceCount: number
+}
+
+export async function getRooms(): Promise<RoomListItem[]> {
   const response = await fetch("/api/rooms", {
     method: "GET"
   })
 
   if (!response.ok) throw new Error(`Request failed with status ${response.status}`)
-  const payload = (await response.json()) as RoomResponse[]
-  return payload.map(item => item.roomId)
+  return (await response.json()) as RoomResponse[]
 }
 
 export async function createRoom(): Promise<string> {
