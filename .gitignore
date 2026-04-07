@@ -65,4 +65,4 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 backend/data/version.json
-backend/data/audio/123456/audio-r1.mp3
+backend/data/audio/
