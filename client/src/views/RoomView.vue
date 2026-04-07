@@ -39,7 +39,10 @@
           :key="device.deviceId"
           :class="['device-card', { 'device-card--self': isCurrentDevice(device) }]"
         >
-          <span class="card-id">{{ device.deviceId }}</span>
+          <div class="card-id-block">
+            <span class="card-id">{{ device.deviceId }}</span>
+            <span class="card-timezone">{{ getTimezone(device.deviceInfo) }}</span>
+          </div>
 
           <button
             :class="['role-dot', { 'role-dot--master': device.isMaster }]"
@@ -63,9 +66,8 @@
               ✎
             </button>
           </p>
-          <p><strong>Присоединился:</strong> {{ formatUnix(device.firstSeenUtc) }} ({{ formatActivity(device.firstSeenUtc) }})</p>
-          <p><strong>Timezone:</strong> {{ getTimezone(device.deviceInfo) }}</p>
-          <p><strong>Тип устройства:</strong> {{ getDeviceType(device) }}</p>
+          <p class="device-type-line">{{ getDeviceType(device) }}</p>
+          <p class="device-activity">Активен {{ formatActivity(device.firstSeenUtc) }}</p>
           <span :class="['audio-ready-dot', { 'audio-ready-dot--ready': device.isAudioReady }]" title="Готовность аудио"></span>
 
           <div v-if="editingDeviceId === device.deviceId" class="inline-editor">
@@ -249,9 +251,6 @@ export default {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Не удалось сохранить имя устройства: ${message}`
       }
-    },
-    formatUnix(unixSeconds: number): string {
-      return new Date(unixSeconds * 1000).toLocaleString("ru-RU")
     },
     formatActivity(firstSeenUtc: number): string {
       const nowUnix = Math.floor(Date.now() / 1000)
@@ -870,12 +869,37 @@ h2 {
   margin: 0 0 7px;
 }
 
-.card-id {
+.card-id-block {
   position: absolute;
   right: 10px;
   top: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+}
+
+.card-id {
   font-size: 12px;
   color: rgba(232, 236, 255, 0.5);
+}
+
+.card-timezone {
+  font-size: 11px;
+  color: rgba(232, 236, 255, 0.38);
+}
+
+.device-type-line {
+  margin: 0 0 7px;
+  font-size: 13px;
+  color: rgba(232, 236, 255, 0.72);
+}
+
+.device-activity {
+  margin: 0 0 7px;
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 .device-name-row {
