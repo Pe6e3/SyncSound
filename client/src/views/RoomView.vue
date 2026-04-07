@@ -29,7 +29,8 @@
           >
             ★
           </button>
-          <span v-else-if="isFirstJoined(device)" class="first-joined-badge" title="Первым присоединился">★</span>
+          <span v-else-if="device.isMaster" class="master-badge" title="Мастер комнаты">★</span>
+          <span v-else-if="isFirstJoined(device)" class="first-joined-badge" title="Первым присоединился">✦</span>
 
           <p class="device-name-row">
             <span class="device-name-text">{{ device.displayName || "Имя не указано" }}</span>
@@ -49,6 +50,7 @@
 
           <div v-if="editingDeviceId === device.deviceId" class="inline-editor">
             <input
+              :id="`name-input-${device.deviceId}`"
               v-model="displayNameInput"
               class="name-input"
               type="text"
@@ -240,6 +242,14 @@ export default {
       const shouldOpen = this.editingDeviceId != device.deviceId
       this.editingDeviceId = shouldOpen ? device.deviceId : ""
       this.displayNameInput = device.displayName ?? ""
+
+      if (!shouldOpen) return
+      this.$nextTick(() => {
+        const input = document.getElementById(`name-input-${device.deviceId}`) as HTMLInputElement | null
+        if (!input) return
+        input.focus()
+        input.select()
+      })
     },
     isFirstJoined(device: DeviceResponse): boolean {
       if (!this.devices.length) return false
@@ -387,6 +397,7 @@ h2 {
   color: var(--brand-strong);
 }
 
+.master-badge,
 .first-joined-badge,
 .master-transfer-btn {
   position: absolute;
@@ -399,9 +410,14 @@ h2 {
   place-items: center;
 }
 
-.first-joined-badge {
+.master-badge {
   color: #ffd56a;
   background: rgba(255, 213, 106, 0.16);
+}
+
+.first-joined-badge {
+  color: #b7f2de;
+  background: rgba(38, 129, 97, 0.2);
 }
 
 .master-transfer-btn {
