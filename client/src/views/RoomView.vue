@@ -50,6 +50,7 @@
           <p><strong>Присоединился:</strong> {{ formatUnix(device.firstSeenUtc) }} ({{ formatActivity(device.firstSeenUtc) }})</p>
           <p><strong>Timezone:</strong> {{ getTimezone(device.deviceInfo) }}</p>
           <p><strong>Тип устройства:</strong> {{ getDeviceType(device) }}</p>
+          <span :class="['audio-ready-dot', { 'audio-ready-dot--ready': device.isAudioReady }]" title="Готовность аудио"></span>
 
           <div v-if="editingDeviceId === device.deviceId" class="inline-editor">
             <input
@@ -73,7 +74,7 @@
 <script lang="ts">
 import { collectDeviceInfo } from "@/utils/deviceInfo"
 import { getServerTimeSeconds } from "@/api/timeApi"
-import { downloadRoomAudio, getRoom, registerDevice, transferMaster, updateDeviceName, uploadRoomAudio, type DeviceResponse, type RoomDetailsResponse } from "@/api/roomApi"
+import { downloadRoomAudio, getRoom, registerDevice, reportAudioReady, transferMaster, updateDeviceName, uploadRoomAudio, type DeviceResponse, type RoomDetailsResponse } from "@/api/roomApi"
 
 const LOCAL_DEVICE_ID_KEY = "syncsound-device-id"
 
@@ -97,7 +98,8 @@ export default {
       isUploadingAudio: false,
       downloadedAudioRevision: 0,
       audioStatusMessage: "",
-      audioObjectUrl: ""
+      audioObjectUrl: "",
+      roomSocket: null as WebSocket | null
     }
   },
   computed: {
@@ -125,6 +127,8 @@ export default {
         window.localStorage.setItem(LOCAL_DEVICE_ID_KEY, response.deviceId)
         this.devices = response.room.devices
         await this.syncAudioState(response.room)
+        await this.playJoinClick()
+        this.connectRoomSocket()
 
         const currentDevice = this.devices.find(device => device.deviceId === response.deviceId)
         this.displayNameInput = currentDevice?.displayName ?? ""
@@ -136,6 +140,7 @@ export default {
       }
     },
     async refreshRoomState() {
+      if (this.roomSocket && this.roomSocket.readyState === WebSocket.OPEN) return
       try {
         const room = await getRoom(this.roomId)
         this.devices = room.devices
@@ -317,6 +322,10 @@ export default {
         const blob = await downloadRoomAudio(this.roomId)
         await this.cacheAudioBlob(room.audio.revision, blob)
         this.downloadedAudioRevision = room.audio.revision
+        if (this.currentDeviceId) {
+          const updatedRoom = await reportAudioReady(this.roomId, this.currentDeviceId, room.audio.revision)
+          this.devices = updatedRoom.devices
+        }
         if (room.audio.fileName) this.audioStatusMessage = `Аудио локально: ${room.audio.fileName}`
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
@@ -337,6 +346,53 @@ export default {
       if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
       this.audioObjectUrl = URL.createObjectURL(blob)
     },
+    async playJoinClick() {
+      try {
+        const response = await fetch("/api/audio/click")
+        if (!response.ok) return
+        const blob = await response.blob()
+        const objectUrl = URL.createObjectURL(blob)
+        const audio = new Audio(objectUrl)
+        audio.volume = 0.35
+        await audio.play()
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 5000)
+      } catch {
+        // Browser can block autoplay before first gesture - silent fail.
+      }
+    },
+    buildRoomSocketUrl(): string {
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws"
+      const encodedRoomId = encodeURIComponent(this.roomId)
+      const encodedDeviceId = encodeURIComponent(this.currentDeviceId)
+      return `${protocol}://${window.location.host}/ws/rooms/${encodedRoomId}?deviceId=${encodedDeviceId}`
+    },
+    connectRoomSocket() {
+      if (!this.currentDeviceId) return
+      if (this.roomSocket && (this.roomSocket.readyState === WebSocket.OPEN || this.roomSocket.readyState === WebSocket.CONNECTING)) return
+
+      const socket = new WebSocket(this.buildRoomSocketUrl())
+      this.roomSocket = socket
+
+      socket.onmessage = async event => {
+        try {
+          const payload = JSON.parse(event.data) as { type?: string; room?: RoomDetailsResponse }
+          if (payload.type !== "room-state" || !payload.room) return
+          this.devices = payload.room.devices
+          await this.syncAudioState(payload.room)
+        } catch {
+          // Ignore malformed messages.
+        }
+      }
+
+      socket.onclose = () => {
+        if (this.roomSocket === socket) this.roomSocket = null
+      }
+    },
+    disconnectRoomSocket() {
+      if (!this.roomSocket) return
+      this.roomSocket.close()
+      this.roomSocket = null
+    },
     goBackToRooms() {
       this.$router.push("/sound")
     }
@@ -350,12 +406,13 @@ export default {
     }, 5000)
   },
   beforeUnmount() {
-    if (!this.timerId) return
-    window.clearInterval(this.timerId)
+    if (this.timerId) window.clearInterval(this.timerId)
+    this.disconnectRoomSocket()
     if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
   },
   watch: {
     roomId() {
+      this.disconnectRoomSocket()
       this.enterRoom()
     }
   }
@@ -427,6 +484,23 @@ h2 {
   border-radius: 12px;
   padding: 16px 14px 32px;
   background: rgba(15, 41, 31, 0.58);
+}
+
+.audio-ready-dot {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(180, 191, 235, 0.7);
+  background: rgba(180, 191, 235, 0.12);
+}
+
+.audio-ready-dot--ready {
+  border-color: rgba(80, 242, 155, 0.95);
+  background: rgba(80, 242, 155, 0.95);
+  box-shadow: 0 0 8px rgba(80, 242, 155, 0.5);
 }
 
 .device-card--self {

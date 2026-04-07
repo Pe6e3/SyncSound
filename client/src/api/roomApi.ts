@@ -16,6 +16,8 @@ export type DeviceResponse = {
   lastSeenUtc: number
   deviceInfo: Record<string, string>
   isMaster: boolean
+  isOnline: boolean
+  isAudioReady: boolean
 }
 
 export type RoomDetailsResponse = {
@@ -110,5 +112,15 @@ export async function uploadRoomAudio(roomId: string, actorDeviceId: string, fil
 export async function downloadRoomAudio(roomId: string): Promise<Blob> {
   return await requestBlob(`/api/rooms/${roomId}/audio`, {
     method: "GET"
+  })
+}
+
+export async function reportAudioReady(roomId: string, deviceId: string, revision: number): Promise<RoomDetailsResponse> {
+  return await requestJson<RoomDetailsResponse>(`/api/rooms/${roomId}/devices/${deviceId}/audio-ready`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ revision })
   })
 }
