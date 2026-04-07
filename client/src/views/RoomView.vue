@@ -24,7 +24,7 @@
           Стоп
         </button>
       </div>
-      <button v-if="pendingPlayAfterUnlock" class="save-btn" type="button" @click="unlockAudioPlayback">
+      <button v-if="pendingPlayAfterUnlock || pendingUnlockForAudioReady" class="save-btn" type="button" @click="unlockAudioPlayback">
         Активировать звук
       </button>
       <p v-if="audioStatusMessage" class="audio-status">{{ audioStatusMessage }}</p>
@@ -142,6 +142,7 @@ export default {
       isLeavingRoom: false,
       isAudioInteractionUnlocked: false,
       pendingPlayAfterUnlock: false,
+      pendingUnlockForAudioReady: false,
       roomAudioPlayer: null as HTMLAudioElement | null,
       roomAudioPlayerBlobUrl: ""
     }
@@ -192,6 +193,7 @@ export default {
     async enterRoom() {
       try {
         this.isLeavingRoom = false
+        this.pendingUnlockForAudioReady = false
         const localDeviceId = window.localStorage.getItem(LOCAL_DEVICE_ID_KEY) ?? undefined
         const response = await registerDevice(this.roomId, {
           deviceId: localDeviceId,
@@ -400,15 +402,56 @@ export default {
         const blob = await downloadRoomAudio(this.roomId)
         await this.cacheAudioBlob(room.audio.revision, blob)
         this.downloadedAudioRevision = room.audio.revision
-        if (this.currentDeviceId) {
-          const updatedRoom = await reportAudioReady(this.roomId, this.currentDeviceId, room.audio.revision)
-          this.devices = updatedRoom.devices
-        }
+        if (this.currentDeviceId) await this.probePlaybackThenReportReady(room.audio.revision)
         await this.playClick()
         if (room.audio.fileName) this.audioStatusMessage = `Аудио локально: ${room.audio.fileName}`
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Не удалось скачать аудио: ${message}`
+      }
+    },
+    async probePlaybackThenReportReady(revision: number) {
+      if (!this.currentDeviceId || !this.audioObjectUrl) return
+
+      const probe = new Audio(this.audioObjectUrl)
+      probe.volume = 1
+      try {
+        await probe.play()
+        window.setTimeout(() => {
+          probe.pause()
+          probe.currentTime = 0
+        }, 100)
+        const updatedRoom = await reportAudioReady(this.roomId, this.currentDeviceId, revision)
+        this.devices = updatedRoom.devices
+        this.pendingUnlockForAudioReady = false
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "NotAllowedError") {
+          this.pendingUnlockForAudioReady = true
+          this.audioStatusMessage = "Нажмите «Активировать звук», чтобы подтвердить готовность к воспроизведению."
+          return
+        }
+
+        const message = error instanceof Error ? error.message : "Неизвестная ошибка"
+        this.errorMessage = `Не удалось проверить воспроизведение: ${message}`
+      }
+    },
+    async sendConfirmAudioReadyViaWs() {
+      const revision = this.downloadedAudioRevision
+      if (!this.currentDeviceId || revision <= 0) return
+
+      if (this.roomSocket && this.roomSocket.readyState === WebSocket.OPEN) {
+        const payload = { type: "confirm-audio-ready", revision }
+        wsDebugLog("исходящее сообщение", payload)
+        this.roomSocket.send(JSON.stringify(payload))
+        return
+      }
+
+      try {
+        const updatedRoom = await reportAudioReady(this.roomId, this.currentDeviceId, revision)
+        this.devices = updatedRoom.devices
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Неизвестная ошибка"
+        this.errorMessage = `Не удалось подтвердить готовность аудио: ${message}`
       }
     },
     async cacheAudioBlob(revision: number, blob: Blob) {
@@ -494,6 +537,10 @@ export default {
         this.isAudioInteractionUnlocked = true
         this.audioStatusMessage = "Звук активирован."
 
+        if (this.pendingUnlockForAudioReady) {
+          this.pendingUnlockForAudioReady = false
+          await this.sendConfirmAudioReadyViaWs()
+        }
         if (this.pendingPlayAfterUnlock) await this.playRoomAudio()
       } catch {
         this.audioStatusMessage = "Не удалось активировать звук. Повторите касание."
@@ -502,6 +549,7 @@ export default {
     installAudioUnlockListeners() {
       const unlockHandler = () => {
         if (this.isAudioInteractionUnlocked) return
+        if (!this.pendingPlayAfterUnlock && !this.pendingUnlockForAudioReady) return
         this.unlockAudioPlayback()
       }
 
@@ -839,10 +887,12 @@ h2 {
 }
 
 .role-dot--master[disabled] {
-  transform: translateX(-2px);
   border-color: rgba(255, 213, 106, 0.5);
   color: #ffd56a;
   background: rgba(255, 213, 106, 0.16);
+}
+.role-dot--master[disabled] span{
+  transform: translateX(-2px);
 }
 
 .role-dot:not([disabled]) {

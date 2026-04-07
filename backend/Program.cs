@@ -381,6 +381,49 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
                 continue;
             }
 
+            if (messageType == "confirm-audio-ready")
+            {
+                RevisionAudioCommandMessage? confirmPayload;
+                try
+                {
+                    confirmPayload = JsonSerializer.Deserialize<RevisionAudioCommandMessage>(incomingText);
+                }
+                catch
+                {
+                    confirmPayload = null;
+                }
+                if (confirmPayload is null || confirmPayload.Revision <= 0) continue;
+
+                RoomDetailsResponse? roomAfterConfirm = null;
+                lock (syncRoot)
+                {
+                    if (roomDevices.TryGetValue(roomId, out var devices) &&
+                        roomAudioStates.TryGetValue(roomId, out var audioState) &&
+                        !string.IsNullOrWhiteSpace(audioState.FileName) &&
+                        audioState.Revision == confirmPayload.Revision)
+                    {
+                        var target = devices.FirstOrDefault(entry => entry.DeviceId == deviceId);
+                        if (target is not null)
+                        {
+                            var updated = target with
+                            {
+                                AudioReadyRevision = Math.Max(target.AudioReadyRevision, confirmPayload.Revision),
+                                LastSeenUtc = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                            };
+                            ReplaceDevice(devices, updated);
+                            roomAfterConfirm = BuildRoomResponse(roomId, devices, roomAudioStates);
+                        }
+                    }
+                }
+
+                if (roomAfterConfirm is not null)
+                {
+                    await BroadcastRoomState(roomId, roomAfterConfirm, roomSockets, syncRoot);
+                    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, syncRoot);
+                }
+                continue;
+            }
+
             if (messageType is not ("play-audio" or "pause-audio" or "stop-audio")) continue;
 
             RevisionAudioCommandMessage? payload;
