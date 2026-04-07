@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 var rooms = new HashSet<string> { "123456", "654321" };
@@ -99,4 +100,4 @@ static string ReadVersion(string filePath)
     return "v1.0.0";
 }
 
-record VersionPayload(string Version);
+record VersionPayload([property: JsonPropertyName("version")] string Version);
