@@ -180,6 +180,7 @@ app.MapPost("/api/rooms/{roomId}/audio", async (string roomId, HttpRequest reque
 
     if (!IsValidDeviceId(actorDeviceId)) return Results.BadRequest(new { message = "Actor device ID is invalid." });
     if (file is null || file.Length == 0) return Results.BadRequest(new { message = "Audio file is required." });
+    if (!IsAllowedAudioUpload(file)) return Results.BadRequest(new { message = "Only valid audio files are allowed." });
 
     lock (syncRoot)
     {
@@ -275,6 +276,59 @@ static string GetContentTypeByExtension(string extension)
         ".flac" => "audio/flac",
         _ => "application/octet-stream"
     };
+}
+
+static bool IsAllowedAudioUpload(IFormFile file)
+{
+    var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+    var isAllowedExtension = extension is ".mp3" or ".wav" or ".ogg" or ".aac" or ".m4a" or ".flac";
+    if (!isAllowedExtension) return false;
+
+    var contentType = file.ContentType.ToLowerInvariant();
+    var isAllowedContentType = contentType is
+        "audio/mpeg" or
+        "audio/wav" or
+        "audio/x-wav" or
+        "audio/ogg" or
+        "audio/aac" or
+        "audio/mp4" or
+        "audio/flac" or
+        "application/octet-stream";
+    if (!isAllowedContentType) return false;
+
+    using var stream = file.OpenReadStream();
+    return HasKnownAudioSignature(stream);
+}
+
+static bool HasKnownAudioSignature(Stream stream)
+{
+    var header = new byte[16];
+    var read = stream.Read(header, 0, header.Length);
+    if (read < 4) return false;
+
+    var isWav = read >= 12 &&
+        header[0] == (byte)'R' && header[1] == (byte)'I' && header[2] == (byte)'F' && header[3] == (byte)'F' &&
+        header[8] == (byte)'W' && header[9] == (byte)'A' && header[10] == (byte)'V' && header[11] == (byte)'E';
+    if (isWav) return true;
+
+    var isMp3Id3 = header[0] == (byte)'I' && header[1] == (byte)'D' && header[2] == (byte)'3';
+    if (isMp3Id3) return true;
+
+    var isMp3Frame = header[0] == 0xFF && (header[1] & 0xE0) == 0xE0;
+    if (isMp3Frame) return true;
+
+    var isOgg = header[0] == (byte)'O' && header[1] == (byte)'g' && header[2] == (byte)'g' && header[3] == (byte)'S';
+    if (isOgg) return true;
+
+    var isFlac = header[0] == (byte)'f' && header[1] == (byte)'L' && header[2] == (byte)'a' && header[3] == (byte)'C';
+    if (isFlac) return true;
+
+    var isAacAdts = header[0] == 0xFF && (header[1] & 0xF0) == 0xF0;
+    if (isAacAdts) return true;
+
+    var isM4a = read >= 12 &&
+        header[4] == (byte)'f' && header[5] == (byte)'t' && header[6] == (byte)'y' && header[7] == (byte)'p';
+    return isM4a;
 }
 
 app.Run();
