@@ -99,7 +99,10 @@ export default {
       downloadedAudioRevision: 0,
       audioStatusMessage: "",
       audioObjectUrl: "",
-      roomSocket: null as WebSocket | null
+      roomSocket: null as WebSocket | null,
+      roomPollingEnabled: true,
+      wsReconnectTimerId: 0 as number,
+      wsReconnectAttempts: 0
     }
   },
   computed: {
@@ -140,7 +143,7 @@ export default {
       }
     },
     async refreshRoomState() {
-      if (this.roomSocket && this.roomSocket.readyState === WebSocket.OPEN) return
+      if (!this.roomPollingEnabled) return
       try {
         const room = await getRoom(this.roomId)
         this.devices = room.devices
@@ -373,6 +376,12 @@ export default {
       const socket = new WebSocket(this.buildRoomSocketUrl())
       this.roomSocket = socket
 
+      socket.onopen = () => {
+        this.roomPollingEnabled = false
+        this.wsReconnectAttempts = 0
+        this.clearReconnectTimer()
+      }
+
       socket.onmessage = async event => {
         try {
           const payload = JSON.parse(event.data) as { type?: string; room?: RoomDetailsResponse }
@@ -385,10 +394,35 @@ export default {
       }
 
       socket.onclose = () => {
+        this.roomPollingEnabled = true
         if (this.roomSocket === socket) this.roomSocket = null
+        this.scheduleReconnect()
+      }
+
+      socket.onerror = () => {
+        this.roomPollingEnabled = true
       }
     },
+    scheduleReconnect() {
+      if (!this.currentDeviceId) return
+      if (this.wsReconnectTimerId) return
+
+      this.wsReconnectAttempts += 1
+      const delayMs = Math.min(15000, 1000 * 2 ** (this.wsReconnectAttempts - 1))
+      this.wsReconnectTimerId = window.setTimeout(() => {
+        this.wsReconnectTimerId = 0
+        this.connectRoomSocket()
+      }, delayMs)
+    },
+    clearReconnectTimer() {
+      if (!this.wsReconnectTimerId) return
+      window.clearTimeout(this.wsReconnectTimerId)
+      this.wsReconnectTimerId = 0
+    },
     disconnectRoomSocket() {
+      this.clearReconnectTimer()
+      this.roomPollingEnabled = true
+      this.wsReconnectAttempts = 0
       if (!this.roomSocket) return
       this.roomSocket.close()
       this.roomSocket = null
