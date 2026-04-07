@@ -28,15 +28,9 @@
           <p><strong>ID:</strong> {{ device.deviceId }}</p>
           <p><strong>Имя:</strong> {{ device.displayName || "Не задано" }}</p>
           <p><strong>Первый вход:</strong> {{ formatUnix(device.firstSeenUtc) }}</p>
-          <p><strong>Последняя активность:</strong> {{ formatUnix(device.lastSeenUtc) }}</p>
-          <details class="details">
-            <summary>Информация об устройстве</summary>
-            <ul class="info-list">
-              <li v-for="(value, key) in device.deviceInfo" :key="`${device.deviceId}-${key}`">
-                <span class="info-key">{{ key }}:</span> {{ value || "N/A" }}
-              </li>
-            </ul>
-          </details>
+          <p><strong>Продолжительность активности:</strong> {{ formatActivity(device.firstSeenUtc, device.lastSeenUtc) }}</p>
+          <p><strong>Timezone:</strong> {{ getTimezone(device.deviceInfo) }}</p>
+          <p><strong>Тип устройства:</strong> {{ getDeviceType(device) }}</p>
         </li>
       </ul>
     </section>
@@ -121,6 +115,82 @@ export default {
     },
     formatUnix(unixSeconds: number): string {
       return new Date(unixSeconds * 1000).toLocaleString("ru-RU")
+    },
+    formatActivity(firstSeenUtc: number, lastSeenUtc: number): string {
+      const diffSeconds = Math.max(0, lastSeenUtc - firstSeenUtc)
+      if (diffSeconds < 60) return `${diffSeconds} сек`
+
+      const minutes = Math.floor(diffSeconds / 60)
+      const seconds = diffSeconds % 60
+      if (minutes < 60) return `${minutes} мин ${seconds} сек`
+
+      const hours = Math.floor(minutes / 60)
+      const restMinutes = minutes % 60
+      return `${hours} ч ${restMinutes} мин`
+    },
+    getTimezone(deviceInfo: Record<string, string>): string {
+      return deviceInfo.timezone || "N/A"
+    },
+    detectDeviceType(userAgent: string): string {
+      const ua = userAgent.toLowerCase()
+
+      if (!ua) return "Неизвестно"
+      if (ua.includes("iphone")) return "iPhone"
+      if (ua.includes("ipad")) return "iPad"
+      if (ua.includes("android") && ua.includes("mobile")) return "Android телефон"
+      if (ua.includes("android")) return "Android планшет"
+      if (ua.includes("tablet")) return "Планшет"
+      if (ua.includes("macintosh") || ua.includes("windows") || ua.includes("linux")) {
+        if (this.isLikelyLaptopByInfo()) return "Ноутбук"
+        return "ПК"
+      }
+
+      return "Неизвестно"
+    },
+    isLikelyLaptopByInfo(): boolean {
+      if (!this.currentDeviceId) return false
+
+      const device = this.devices.find(entry => entry.deviceId == this.currentDeviceId)
+      if (!device) return false
+
+      const screenResolution = device.deviceInfo.screenResolution || ""
+      const maxTouchPointsRaw = device.deviceInfo.maxTouchPoints || "0"
+      const pixelRatioRaw = device.deviceInfo.pixelRatio || "1"
+      const [widthString, heightString] = screenResolution.split("x")
+
+      const width = Number(widthString)
+      const height = Number(heightString)
+      const maxTouchPoints = Number(maxTouchPointsRaw)
+      const pixelRatio = Number(pixelRatioRaw)
+
+      const hasValidResolution = Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0
+      const smallestSide = hasValidResolution ? Math.min(width, height) : 0
+      const largestSide = hasValidResolution ? Math.max(width, height) : 0
+
+      const typicalLaptopResolution =
+        hasValidResolution &&
+        smallestSide >= 700 &&
+        smallestSide <= 1800 &&
+        largestSide >= 1200 &&
+        largestSide <= 3200
+
+      const touchDesktopLike = maxTouchPoints > 0 && maxTouchPoints <= 10
+      const highDensityPortable = pixelRatio >= 1.5 && pixelRatio <= 3.5
+
+      return typicalLaptopResolution || (touchDesktopLike && highDensityPortable)
+    },
+    getDeviceType(device: DeviceResponse): string {
+      if (device.deviceId == this.currentDeviceId) return this.detectDeviceType(device.deviceInfo.userAgent || "")
+
+      const ua = (device.deviceInfo.userAgent || "").toLowerCase()
+      if (!ua) return "Неизвестно"
+      if (ua.includes("iphone")) return "iPhone"
+      if (ua.includes("ipad")) return "iPad"
+      if (ua.includes("android") && ua.includes("mobile")) return "Android телефон"
+      if (ua.includes("android")) return "Android планшет"
+      if (ua.includes("tablet")) return "Планшет"
+      if (ua.includes("macintosh") || ua.includes("windows") || ua.includes("linux")) return "ПК/Ноутбук"
+      return "Неизвестно"
     },
     goBackToRooms() {
       this.$router.push("/sound")
@@ -245,21 +315,6 @@ h2 {
 
 .device-card p {
   margin: 0 0 7px;
-}
-
-.details {
-  margin-top: 8px;
-}
-
-.info-list {
-  margin: 8px 0 0;
-  padding-left: 18px;
-  display: grid;
-  gap: 4px;
-}
-
-.info-key {
-  color: var(--text-muted);
 }
 
 .empty-label {
