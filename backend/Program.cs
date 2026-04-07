@@ -381,12 +381,12 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
                 continue;
             }
 
-            if (messageType != "play-audio") continue;
+            if (messageType is not ("play-audio" or "pause-audio" or "stop-audio")) continue;
 
-            PlayAudioMessage? payload;
+            RevisionAudioCommandMessage? payload;
             try
             {
-                payload = JsonSerializer.Deserialize<PlayAudioMessage>(incomingText);
+                payload = JsonSerializer.Deserialize<RevisionAudioCommandMessage>(incomingText);
             }
             catch
             {
@@ -395,11 +395,13 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
             if (payload is null || payload.Revision <= 0) continue;
 
             bool canPlay;
+            bool canTransport;
             lock (syncRoot)
             {
                 if (!roomDevices.TryGetValue(roomId, out var devices) || !roomAudioStates.TryGetValue(roomId, out var audioState))
                 {
                     canPlay = false;
+                    canTransport = false;
                 }
                 else
                 {
@@ -408,11 +410,25 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
                     var hasAudio = !string.IsNullOrWhiteSpace(audioState.FileName) && audioState.Revision == payload.Revision;
                     var allReady = devices.Count > 0 && devices.All(entry => entry.AudioReadyRevision >= payload.Revision);
                     canPlay = isMaster && hasAudio && allReady;
+                    canTransport = isMaster && hasAudio;
                 }
             }
 
-            if (!canPlay) continue;
-            await BroadcastMessage(roomId, new { type = "play-audio", revision = payload.Revision }, roomSockets, syncRoot);
+            switch (messageType)
+            {
+                case "play-audio":
+                    if (!canPlay) continue;
+                    await BroadcastMessage(roomId, new { type = "play-audio", revision = payload.Revision }, roomSockets, syncRoot);
+                    break;
+                case "pause-audio":
+                    if (!canTransport) continue;
+                    await BroadcastMessage(roomId, new { type = "pause-audio", revision = payload.Revision }, roomSockets, syncRoot);
+                    break;
+                case "stop-audio":
+                    if (!canTransport) continue;
+                    await BroadcastMessage(roomId, new { type = "stop-audio", revision = payload.Revision }, roomSockets, syncRoot);
+                    break;
+            }
         }
     }
     finally
@@ -770,7 +786,7 @@ record RegisterDeviceRequest(
 record UpdateDeviceNameRequest([property: JsonPropertyName("displayName")] string? DisplayName);
 record ChangeMasterRequest([property: JsonPropertyName("actorDeviceId")] string ActorDeviceId);
 record AudioReadyRequest([property: JsonPropertyName("revision")] long Revision);
-record PlayAudioMessage(
+record RevisionAudioCommandMessage(
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("revision")] long Revision
 );

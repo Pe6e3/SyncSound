@@ -17,6 +17,12 @@
         <button class="save-btn" type="button" :disabled="!canPlayAudio" @click="sendPlaySignal">
           Play
         </button>
+        <button class="save-btn" type="button" :disabled="!canMasterTransportControls" @click="sendPauseSignal">
+          Пауза
+        </button>
+        <button class="save-btn" type="button" :disabled="!canMasterTransportControls" @click="sendStopSignal">
+          Стоп
+        </button>
       </div>
       <button v-if="pendingPlayAfterUnlock" class="save-btn" type="button" @click="unlockAudioPlayback">
         Активировать звук
@@ -135,7 +141,9 @@ export default {
       wsReconnectAttempts: 0,
       isLeavingRoom: false,
       isAudioInteractionUnlocked: false,
-      pendingPlayAfterUnlock: false
+      pendingPlayAfterUnlock: false,
+      roomAudioPlayer: null as HTMLAudioElement | null,
+      roomAudioPlayerBlobUrl: ""
     }
   },
   computed: {
@@ -159,6 +167,11 @@ export default {
       if (!this.isCurrentMaster) return false
       if (!this.hasAudioInRoom) return false
       return this.areAllDevicesReady
+    },
+    canMasterTransportControls(): boolean {
+      if (!this.isCurrentMaster) return false
+      if (!this.hasAudioInRoom) return false
+      return this.downloadedAudioRevision > 0
     }
   },
   methods: {
@@ -410,6 +423,33 @@ export default {
       // Keep a local object URL for immediate playback on all clients.
       if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
       this.audioObjectUrl = URL.createObjectURL(blob)
+      if (this.roomAudioPlayer) {
+        this.roomAudioPlayer.pause()
+        this.roomAudioPlayer.src = this.audioObjectUrl
+        this.roomAudioPlayerBlobUrl = this.audioObjectUrl
+        void this.roomAudioPlayer.load()
+      }
+    },
+    getOrCreateRoomAudioPlayer(): HTMLAudioElement {
+      if (!this.roomAudioPlayer) {
+        this.roomAudioPlayer = new Audio()
+        this.roomAudioPlayer.preload = "auto"
+      }
+      if (this.audioObjectUrl && this.roomAudioPlayerBlobUrl !== this.audioObjectUrl) {
+        this.roomAudioPlayer.pause()
+        this.roomAudioPlayer.src = this.audioObjectUrl
+        this.roomAudioPlayerBlobUrl = this.audioObjectUrl
+        void this.roomAudioPlayer.load()
+      }
+      return this.roomAudioPlayer
+    },
+    disposeRoomAudioPlayer() {
+      if (!this.roomAudioPlayer) return
+      this.roomAudioPlayer.pause()
+      this.roomAudioPlayer.removeAttribute("src")
+      void this.roomAudioPlayer.load()
+      this.roomAudioPlayer = null
+      this.roomAudioPlayerBlobUrl = ""
     },
     async playRoomAudio() {
       if (!this.audioObjectUrl) {
@@ -417,8 +457,10 @@ export default {
         return
       }
 
+      const audio = this.getOrCreateRoomAudioPlayer()
       try {
-        const audio = new Audio(this.audioObjectUrl)
+        if (!audio.paused && !audio.ended) return
+        if (audio.ended) audio.currentTime = 0
         await audio.play()
         this.pendingPlayAfterUnlock = false
       } catch (error) {
@@ -431,6 +473,16 @@ export default {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Не удалось воспроизвести аудио: ${message}`
       }
+    },
+    pauseRoomAudio() {
+      if (!this.roomAudioPlayer) return
+      this.roomAudioPlayer.pause()
+    },
+    stopRoomAudio() {
+      if (!this.audioObjectUrl) return
+      const audio = this.getOrCreateRoomAudioPlayer()
+      audio.pause()
+      audio.currentTime = 0
     },
     async unlockAudioPlayback() {
       try {
@@ -478,6 +530,23 @@ export default {
       }
       wsDebugLog("исходящее сообщение", payload)
       this.roomSocket.send(JSON.stringify(payload))
+    },
+    sendMasterTransportCommand(type: "pause-audio" | "stop-audio") {
+      if (!this.canMasterTransportControls) return
+      if (!this.roomSocket || this.roomSocket.readyState !== WebSocket.OPEN) {
+        this.errorMessage = "Соединение WebSocket недоступно"
+        return
+      }
+
+      const payload = { type, revision: this.downloadedAudioRevision }
+      wsDebugLog("исходящее сообщение", payload)
+      this.roomSocket.send(JSON.stringify(payload))
+    },
+    sendPauseSignal() {
+      this.sendMasterTransportCommand("pause-audio")
+    },
+    sendStopSignal() {
+      this.sendMasterTransportCommand("stop-audio")
     },
     async playClick() {
       try {
@@ -536,6 +605,18 @@ export default {
           if (payload.type === "play-audio") {
             wsDebugLog("входящее play-audio", { revision: payload.revision })
             await this.playRoomAudio()
+            return
+          }
+
+          if (payload.type === "pause-audio") {
+            wsDebugLog("входящее pause-audio", { revision: payload.revision })
+            this.pauseRoomAudio()
+            return
+          }
+
+          if (payload.type === "stop-audio") {
+            wsDebugLog("входящее stop-audio", { revision: payload.revision })
+            this.stopRoomAudio()
             return
           }
 
@@ -608,6 +689,7 @@ export default {
     this.removeAudioUnlockListeners()
     wsDebugLog("beforeUnmount: размонтирование комнаты")
     this.disconnectRoomSocket()
+    this.disposeRoomAudioPlayer()
     if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
   },
   watch: {
