@@ -5,7 +5,12 @@
       <h1>Комната</h1>
       <p class="room-id">ID комнаты: {{ roomId }}</p>
       <div v-if="isCurrentMaster" class="audio-upload">
-        <input class="audio-input" type="file" accept="audio/*" @change="onAudioFileSelected" />
+        <input
+          class="audio-input"
+          type="file"
+          accept=".mp3,.wav,.ogg,.aac,.m4a,.flac,audio/mpeg,audio/wav,audio/x-wav,audio/ogg,audio/aac,audio/flac"
+          @change="onAudioFileSelected"
+        />
         <button class="save-btn" type="button" :disabled="!selectedAudioFile || isUploadingAudio" @click="uploadAudioFile">
           {{ isUploadingAudio ? "Загрузка..." : "Загрузить аудио" }}
         </button>
