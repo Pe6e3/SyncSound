@@ -455,18 +455,19 @@ export default {
           this.errorMessage = `Не удалось подтвердить готовность аудио: ${message}`
         })
     },
-    async cacheAudioBlob(revision: number, blob: Blob) {
+    async cacheAudioBlob(revision: number, blob: Blob | ArrayBuffer | Uint8Array | string | unknown) {
+      const normalizedBlob = blob instanceof Blob ? blob : new Blob([blob as BlobPart])
       const hasCacheStorage = typeof window !== "undefined" && "caches" in window
       if (hasCacheStorage) {
         const cache = await window.caches.open("syncsound-audio-cache")
         const request = new Request(`/local-audio/${this.roomId}/${revision}`)
-        const response = new Response(blob)
+        const response = new Response(normalizedBlob)
         await cache.put(request, response)
       }
 
       // Keep a local object URL for immediate playback on all clients.
       if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
-      this.audioObjectUrl = URL.createObjectURL(blob)
+      this.audioObjectUrl = URL.createObjectURL(normalizedBlob)
       if (this.roomAudioPlayer) {
         this.roomAudioPlayer.pause()
         this.roomAudioPlayer.src = this.audioObjectUrl
