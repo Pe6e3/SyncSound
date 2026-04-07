@@ -1,0 +1,18 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: syncsound-backend
+    restart: unless-stopped
+
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    container_name: syncsound-nginx
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    restart: unless-stopped
