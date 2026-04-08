@@ -36,6 +36,12 @@ app.MapGet("/api/time", () =>
     return Results.Ok(new { unixSeconds });
 });
 
+app.MapGet("/api/time-ms", () =>
+{
+    var unixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    return Results.Ok(new { unixMs });
+});
+
 app.MapGet("/api/version", () =>
 {
     var version = ReadVersion(versionFilePath);
@@ -115,6 +121,9 @@ app.MapPost("/api/rooms/{roomId}/devices/register", async (string roomId, Regist
                 normalizedDeviceInfo,
                 !devices.Any(device => device.IsMaster),
                 false,
+                0,
+                false,
+                0,
                 0
             );
             devices.Add(newDevice);
@@ -264,7 +273,13 @@ app.MapPost("/api/rooms/{roomId}/audio", async (string roomId, HttpRequest reque
         roomAudioStates[roomId] = updatedAudioState;
 
         for (var index = 0; index < devices.Count; index++)
-            devices[index] = devices[index] with { AudioReadyRevision = 0 };
+            devices[index] = devices[index] with
+            {
+                AudioReadyRevision = 0,
+                IsPlaybackSyncCalibrated = false,
+                PlaybackSyncLagMs = 0,
+                PlaybackSyncRevision = 0
+            };
     }
 
     using (var stream = File.Create(outputPath))
@@ -424,6 +439,105 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
                 continue;
             }
 
+            if (messageType == "sync-tone-start")
+            {
+                SyncToneStartMessage? toneStart;
+                try
+                {
+                    toneStart = JsonSerializer.Deserialize<SyncToneStartMessage>(incomingText);
+                }
+                catch
+                {
+                    toneStart = null;
+                }
+
+                if (toneStart is null ||
+                    string.IsNullOrWhiteSpace(toneStart.TargetDeviceId) ||
+                    string.IsNullOrWhiteSpace(toneStart.SessionId))
+                    continue;
+
+                var issuedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var canRelayTone = false;
+                lock (syncRoot)
+                {
+                    if (roomDevices.TryGetValue(roomId, out var devices))
+                    {
+                        var actor = devices.FirstOrDefault(entry => entry.DeviceId == deviceId);
+                        if (actor?.IsMaster is true &&
+                            devices.Any(entry => entry.DeviceId == toneStart.TargetDeviceId))
+                            canRelayTone = true;
+                    }
+                }
+
+                if (!canRelayTone) continue;
+
+                await BroadcastMessage(
+                    roomId,
+                    new
+                    {
+                        type = "sync-tone-start",
+                        targetDeviceId = toneStart.TargetDeviceId,
+                        sessionId = toneStart.SessionId,
+                        iteration = toneStart.Iteration,
+                        serverIssuedAtMs = issuedAt
+                    },
+                    roomSockets,
+                    syncRoot
+                );
+                continue;
+            }
+
+            if (messageType == "sync-latency-report")
+            {
+                SyncLatencyReportMessage? latencyReport;
+                try
+                {
+                    latencyReport = JsonSerializer.Deserialize<SyncLatencyReportMessage>(incomingText);
+                }
+                catch
+                {
+                    latencyReport = null;
+                }
+
+                if (latencyReport is null ||
+                    string.IsNullOrWhiteSpace(latencyReport.DeviceId) ||
+                    double.IsNaN(latencyReport.LagMs) ||
+                    latencyReport.LagMs is < 0 or > 8000)
+                    continue;
+
+                RoomDetailsResponse? roomAfterLatency = null;
+                lock (syncRoot)
+                {
+                    if (!roomDevices.TryGetValue(roomId, out var devices) ||
+                        !roomAudioStates.TryGetValue(roomId, out var audioState))
+                        goto latencyDone;
+
+                    var actor = devices.FirstOrDefault(entry => entry.DeviceId == deviceId);
+                    if (actor?.IsMaster is not true) goto latencyDone;
+
+                    var target = devices.FirstOrDefault(entry => entry.DeviceId == latencyReport.DeviceId);
+                    if (target is null || target.IsMaster) goto latencyDone;
+
+                    var rev = audioState.Revision;
+                    if (rev <= 0 || target.AudioReadyRevision < rev) goto latencyDone;
+
+                    var updated = target with
+                    {
+                        PlaybackSyncLagMs = latencyReport.LagMs,
+                        IsPlaybackSyncCalibrated = true,
+                        PlaybackSyncRevision = rev,
+                        LastSeenUtc = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                    };
+                    ReplaceDevice(devices, updated);
+                    roomAfterLatency = BuildRoomResponse(roomId, devices, roomAudioStates);
+                }
+
+            latencyDone:
+                if (roomAfterLatency is not null)
+                    await BroadcastRoomState(roomId, roomAfterLatency, roomSockets, syncRoot);
+                continue;
+            }
+
             if (messageType is not ("play-audio" or "pause-audio" or "stop-audio")) continue;
 
             RevisionAudioCommandMessage? payload;
@@ -451,8 +565,9 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
                     var actor = devices.FirstOrDefault(entry => entry.DeviceId == deviceId);
                     var isMaster = actor?.IsMaster ?? false;
                     var hasAudio = !string.IsNullOrWhiteSpace(audioState.FileName) && audioState.Revision == payload.Revision;
-                    var allReady = devices.Count > 0 && devices.All(entry => entry.AudioReadyRevision >= payload.Revision);
-                    canPlay = isMaster && hasAudio && allReady;
+                    var allAudioReady = devices.Count > 0 && devices.All(entry => entry.AudioReadyRevision >= payload.Revision);
+                    var allPlaybackReady = allAudioReady && AreDevicesPlaybackSyncReady(devices, payload.Revision);
+                    canPlay = isMaster && hasAudio && allPlaybackReady;
                     canTransport = isMaster && hasAudio;
                 }
             }
@@ -461,7 +576,22 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
             {
                 case "play-audio":
                     if (!canPlay) continue;
-                    await BroadcastMessage(roomId, new { type = "play-audio", revision = payload.Revision }, roomSockets, syncRoot);
+                    long serverStartMs;
+                    double maxSyncLagMs;
+                    lock (syncRoot)
+                    {
+                        maxSyncLagMs = roomDevices.TryGetValue(roomId, out var lagDevices)
+                            ? ComputeMaxPlaybackSyncLagMs(lagDevices)
+                            : 0;
+                        serverStartMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 850L;
+                    }
+
+                    await BroadcastMessage(
+                        roomId,
+                        new { type = "play-audio", revision = payload.Revision, serverStartMs, maxSyncLagMs },
+                        roomSockets,
+                        syncRoot
+                    );
                     break;
                 case "pause-audio":
                     if (!canTransport) continue;
@@ -777,9 +907,39 @@ static void ReplaceDevice(List<DeviceEntry> devices, DeviceEntry updatedDevice)
     devices[index] = updatedDevice;
 }
 
+static bool AreDevicesPlaybackSyncReady(List<DeviceEntry> devices, long audioRevision)
+{
+    if (audioRevision <= 0) return false;
+    if (devices.Count == 0) return false;
+
+    foreach (var device in devices)
+    {
+        if (device.AudioReadyRevision < audioRevision) return false;
+        if (device.IsMaster) continue;
+        if (!device.IsPlaybackSyncCalibrated || device.PlaybackSyncRevision < audioRevision) return false;
+    }
+
+    return true;
+}
+
+static double ComputeMaxPlaybackSyncLagMs(List<DeviceEntry> devices)
+{
+    var max = 0.0;
+    foreach (var device in devices)
+    {
+        if (device.IsMaster) continue;
+        if (device.PlaybackSyncLagMs > max) max = device.PlaybackSyncLagMs;
+    }
+
+    return max;
+}
+
 static DeviceResponse MapDevice(DeviceEntry device, long audioRevision)
 {
     var isAudioReady = audioRevision > 0 && device.AudioReadyRevision >= audioRevision;
+    var isPlaybackSyncReady = audioRevision > 0 &&
+        (device.IsMaster ||
+            (device.IsPlaybackSyncCalibrated && device.PlaybackSyncRevision >= audioRevision));
     return new DeviceResponse(
         device.DeviceId,
         device.DisplayName,
@@ -788,7 +948,9 @@ static DeviceResponse MapDevice(DeviceEntry device, long audioRevision)
         device.DeviceInfo,
         device.IsMaster,
         device.IsOnline,
-        isAudioReady
+        isAudioReady,
+        isPlaybackSyncReady,
+        device.PlaybackSyncLagMs
     );
 }
 
@@ -829,6 +991,17 @@ record RegisterDeviceRequest(
 record UpdateDeviceNameRequest([property: JsonPropertyName("displayName")] string? DisplayName);
 record ChangeMasterRequest([property: JsonPropertyName("actorDeviceId")] string ActorDeviceId);
 record AudioReadyRequest([property: JsonPropertyName("revision")] long Revision);
+record SyncToneStartMessage(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("targetDeviceId")] string TargetDeviceId,
+    [property: JsonPropertyName("sessionId")] string SessionId,
+    [property: JsonPropertyName("iteration")] int Iteration
+);
+record SyncLatencyReportMessage(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("deviceId")] string DeviceId,
+    [property: JsonPropertyName("lagMs")] double LagMs
+);
 record RevisionAudioCommandMessage(
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("revision")] long Revision
@@ -851,7 +1024,10 @@ record DeviceEntry(
     Dictionary<string, string> DeviceInfo,
     bool IsMaster,
     bool IsOnline,
-    long AudioReadyRevision
+    long AudioReadyRevision,
+    bool IsPlaybackSyncCalibrated,
+    double PlaybackSyncLagMs,
+    long PlaybackSyncRevision
 );
 
 record RegisterDeviceResponse(
@@ -880,5 +1056,7 @@ record DeviceResponse(
     [property: JsonPropertyName("deviceInfo")] Dictionary<string, string> DeviceInfo,
     [property: JsonPropertyName("isMaster")] bool IsMaster,
     [property: JsonPropertyName("isOnline")] bool IsOnline,
-    [property: JsonPropertyName("isAudioReady")] bool IsAudioReady
+    [property: JsonPropertyName("isAudioReady")] bool IsAudioReady,
+    [property: JsonPropertyName("isPlaybackSyncReady")] bool IsPlaybackSyncReady,
+    [property: JsonPropertyName("playbackSyncLagMs")] double PlaybackSyncLagMs
 );

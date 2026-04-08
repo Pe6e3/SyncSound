@@ -14,6 +14,9 @@
         <button class="save-btn" type="button" :disabled="!selectedAudioFile || isUploadingAudio" @click="uploadAudioFile">
           {{ isUploadingAudio ? "Загрузка..." : "Загрузить аудио" }}
         </button>
+        <button class="save-btn" type="button" :disabled="!canStartPlaybackCalibration" @click="runPlaybackCalibration">
+          {{ isSyncCalibrating ? "Калибровка…" : "Калибровка синхр." }}
+        </button>
         <button class="save-btn" type="button" :disabled="!canPlayAudio" @click="sendPlaySignal">
           Play
         </button>
@@ -68,7 +71,16 @@
           </p>
           <p class="device-type-line">{{ getDeviceType(device) }}</p>
           <p class="device-activity">Активен {{ formatActivity(device.firstSeenUtc) }}</p>
-          <span :class="['audio-ready-dot', { 'audio-ready-dot--ready': device.isAudioReady }]" title="Готовность аудио"></span>
+          <div class="device-indicators" aria-hidden="true">
+            <span
+              :class="['audio-ready-dot', { 'audio-ready-dot--ready': device.isAudioReady }]"
+              title="Аудио загружено и готово"
+            />
+            <span
+              :class="['sync-ready-dot', { 'sync-ready-dot--ready': device.isPlaybackSyncReady }]"
+              :title="device.isMaster ? 'Мастер: опорная задержка 0' : 'Калибровка синхронизации'"
+            />
+          </div>
 
           <div v-if="editingDeviceId === device.deviceId" class="inline-editor">
             <input
@@ -91,6 +103,14 @@
 
 <script lang="ts">
 import { collectDeviceInfo } from "@/utils/deviceInfo"
+import {
+  averageLast,
+  fetchServerTimeSkewMs,
+  isStableWithinMs,
+  measureLagMsAfterSend,
+  playSyncTonePattern,
+  resumeOrCreateAudioContext
+} from "@/utils/syncCalibration"
 import { downloadRoomAudio, registerDevice, reportAudioReady, transferMaster, updateDeviceName, uploadRoomAudio, type DeviceResponse, type RoomDetailsResponse } from "@/api/roomApi"
 
 const LOCAL_DEVICE_ID_KEY = "syncsound-device-id"
@@ -117,6 +137,10 @@ function summarizeRoomForLog(room: RoomDetailsResponse) {
     audioRevision: room.audio.revision,
     hasAudio: room.audio.hasAudio
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms))
 }
 
 export default {
@@ -146,7 +170,10 @@ export default {
       pendingPlayAfterUnlock: false,
       pendingUnlockForAudioReady: false,
       roomAudioPlayer: null as HTMLAudioElement | null,
-      roomAudioPlayerBlobUrl: ""
+      roomAudioPlayerBlobUrl: "",
+      calibrationAudioContext: null as AudioContext | null,
+      isSyncCalibrating: false,
+      serverTimeSkewMs: 0 as number
     }
   },
   computed: {
@@ -166,10 +193,25 @@ export default {
       if (!this.devices.length) return false
       return this.devices.every(device => device.isAudioReady)
     },
+    slaveDevicesForCalibration(): DeviceResponse[] {
+      return this.orderedDevices.filter(device => !device.isMaster && device.isOnline && device.isAudioReady)
+    },
+    areAllDevicesPlaybackSyncReady(): boolean {
+      if (!this.devices.length) return false
+      return this.devices.every(device => device.isPlaybackSyncReady)
+    },
+    canStartPlaybackCalibration(): boolean {
+      if (!this.isCurrentMaster) return false
+      if (!this.areAllDevicesReady) return false
+      if (this.isSyncCalibrating) return false
+      if (!this.slaveDevicesForCalibration.length) return false
+      return true
+    },
     canPlayAudio(): boolean {
       if (!this.isCurrentMaster) return false
       if (!this.hasAudioInRoom) return false
-      return this.areAllDevicesReady
+      if (!this.areAllDevicesReady) return false
+      return this.areAllDevicesPlaybackSyncReady
     },
     canMasterTransportControls(): boolean {
       if (!this.isCurrentMaster) return false
@@ -700,6 +742,116 @@ export default {
     sendStopSignal() {
       this.sendMasterTransportCommand("stop-audio")
     },
+    async refreshServerSkew() {
+      try {
+        this.serverTimeSkewMs = await fetchServerTimeSkewMs()
+      } catch {
+        /* scheduled play falls back to skew 0 */
+      }
+    },
+    async schedulePlayRoomAudio(serverStartMs: number, maxSyncLagMs: number) {
+      await this.refreshServerSkew()
+      const skew = this.serverTimeSkewMs
+      const device = this.currentDevice
+      const myLag =
+        device?.isMaster ? 0 : typeof device?.playbackSyncLagMs === "number" ? device.playbackSyncLagMs : 0
+      const leadMs = Math.max(0, maxSyncLagMs - myLag)
+      let waitMs = serverStartMs - skew - Date.now() - leadMs
+      if (waitMs < 0) waitMs = 0
+
+      wsDebugLog("запланирован Play", { serverStartMs, maxSyncLagMs, myLag, leadMs, waitMs, skew })
+      window.setTimeout(() => void this.playRoomAudio(), waitMs)
+    },
+    disposeCalibrationAudioContext() {
+      const ctx = this.calibrationAudioContext
+      if (!ctx) return
+      void ctx.close().catch(() => {})
+      this.calibrationAudioContext = null
+    },
+    async handleIncomingSyncTone(payload: { targetDeviceId?: string }) {
+      if (!payload.targetDeviceId || payload.targetDeviceId !== this.currentDeviceId) return
+      try {
+        this.calibrationAudioContext = await resumeOrCreateAudioContext(this.calibrationAudioContext)
+        playSyncTonePattern(this.calibrationAudioContext)
+      } catch {
+        /* калибровочный тон не критичен */
+      }
+    },
+    sendSyncLatencyReportWs(targetDeviceId: string, lagMs: number) {
+      if (!this.roomSocket || this.roomSocket.readyState !== WebSocket.OPEN) return
+      const payload = { type: "sync-latency-report", deviceId: targetDeviceId, lagMs }
+      wsDebugLog("исходящее сообщение", payload)
+      this.roomSocket.send(JSON.stringify(payload))
+    },
+    async runPlaybackCalibration() {
+      if (!this.canStartPlaybackCalibration) return
+      if (!this.roomSocket || this.roomSocket.readyState !== WebSocket.OPEN) {
+        this.errorMessage = "Для калибровки нужен активный WebSocket."
+        return
+      }
+
+      this.isSyncCalibrating = true
+      this.audioStatusMessage =
+        "Калибровка: на мастере нужен доступ к микрофону; держите устройства рядом и среднюю громкость на ведомом."
+
+      try {
+        try {
+          this.calibrationAudioContext = await resumeOrCreateAudioContext(this.calibrationAudioContext)
+        } catch {
+          /* дальше попытаемся снова на первом тоне */
+        }
+
+        for (const slave of this.slaveDevicesForCalibration) {
+          const samples: number[] = []
+          const maxAttempts = 32
+
+          for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            const sessionId = `${slave.deviceId}-${attempt}-${Date.now()}`
+            const body = {
+              type: "sync-tone-start",
+              targetDeviceId: slave.deviceId,
+              sessionId,
+              iteration: attempt + 1
+            }
+            const json = JSON.stringify(body)
+            const sendPerf = performance.now()
+            this.roomSocket.send(json)
+
+            try {
+              const lagMs = await measureLagMsAfterSend(sendPerf)
+              samples.push(lagMs)
+              console.log(
+                `[SyncSound калибровка] устройство ${slave.deviceId}, замер ${samples.length}: ${lagMs.toFixed(2)} ms`
+              )
+              if (samples.length >= 5 && isStableWithinMs(samples, 10)) break
+            } catch (error) {
+              console.warn("[SyncSound калибровка] замер не удался", error)
+            }
+
+            await sleep(420)
+          }
+
+          if (samples.length < 5) {
+            this.errorMessage = `Не удалось стабилизировать задержку для ${slave.deviceId}. Проверьте микрофон и громкость.`
+            return
+          }
+
+          if (!isStableWithinMs(samples, 10))
+            console.warn(
+              `[SyncSound калибровка] для ${slave.deviceId} разброс последних 5 замеров > 10 ms, берём среднее последних 5`
+            )
+
+          const avgLag = averageLast(samples, 5)
+          console.log(`[SyncSound калибровка] устройство ${slave.deviceId}: итоговая задержка ≈ ${avgLag.toFixed(2)} ms`)
+          this.sendSyncLatencyReportWs(slave.deviceId, avgLag)
+          await sleep(280)
+        }
+
+        this.audioStatusMessage = "Калибровка синхронизации завершена. Можно нажимать Play."
+      } finally {
+        this.isSyncCalibrating = false
+      }
+    },
     async playClick() {
       try {
         const response = await fetch("/api/audio/click")
@@ -754,9 +906,23 @@ export default {
             return
           }
 
+          if (payload.type === "sync-tone-start") {
+            const tonePayload = payload as { targetDeviceId?: string; sessionId?: string; iteration?: number }
+            wsDebugLog("входящее sync-tone-start", tonePayload)
+            await this.handleIncomingSyncTone(tonePayload)
+            return
+          }
+
           if (payload.type === "play-audio") {
-            wsDebugLog("входящее play-audio", { revision: payload.revision })
-            await this.playRoomAudio()
+            const playPayload = payload as {
+              revision?: number
+              serverStartMs?: number
+              maxSyncLagMs?: number
+            }
+            wsDebugLog("входящее play-audio", playPayload)
+            if (typeof playPayload.serverStartMs === "number" && typeof playPayload.maxSyncLagMs === "number")
+              await this.schedulePlayRoomAudio(playPayload.serverStartMs, playPayload.maxSyncLagMs)
+            else await this.playRoomAudio()
             return
           }
 
@@ -841,6 +1007,7 @@ export default {
     this.removeAudioUnlockListeners()
     wsDebugLog("beforeUnmount: размонтирование комнаты")
     this.disconnectRoomSocket()
+    this.disposeCalibrationAudioContext()
     this.disposeRoomAudioPlayer()
     if (this.audioObjectUrl) URL.revokeObjectURL(this.audioObjectUrl)
   },
@@ -920,15 +1087,37 @@ h2 {
   background: rgba(15, 41, 31, 0.58);
 }
 
-.audio-ready-dot {
+.device-indicators {
   position: absolute;
   right: 10px;
   bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.audio-ready-dot {
+  display: inline-block;
   width: 12px;
   height: 12px;
   border-radius: 999px;
   border: 1px solid rgba(180, 191, 235, 0.7);
   background: rgba(180, 191, 235, 0.12);
+}
+
+.sync-ready-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(147, 178, 255, 0.55);
+  background: rgba(147, 178, 255, 0.12);
+}
+
+.sync-ready-dot--ready {
+  border-color: rgba(120, 190, 255, 0.95);
+  background: rgba(120, 190, 255, 0.9);
+  box-shadow: 0 0 8px rgba(120, 190, 255, 0.45);
 }
 
 .audio-ready-dot--ready {

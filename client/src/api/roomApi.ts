@@ -18,6 +18,8 @@ export type DeviceResponse = {
   isMaster: boolean
   isOnline: boolean
   isAudioReady: boolean
+  isPlaybackSyncReady: boolean
+  playbackSyncLagMs: number
 }
 
 export type RoomDetailsResponse = {
