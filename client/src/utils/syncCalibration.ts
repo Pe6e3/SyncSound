@@ -73,11 +73,29 @@ function isLocalhostHostname(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]"
 }
 
+/** Микрофон разрешён только в безопасном контексте: HTTPS или http://localhost (и аналоги). По http://192.168.x.x браузер запрос не покажет. */
+export function isMicrophoneContextOk(): boolean {
+  if (typeof window === "undefined") return false
+  if (window.isSecureContext) return true
+  return isLocalhostHostname(window.location.hostname)
+}
+
+const MIC_HTTPS_HINT =
+  "Микрофон для калибровки доступен только в безопасном контексте: HTTPS или адрес localhost. Если открываете приложение по http:// и IP (например 192.168.…), браузер не покажет окно доступа к микрофону — настройте HTTPS или заходите с https:// или с этого компьютера через http://localhost."
+
 export function formatMicrophoneOpenError(error: unknown): string {
+  if (error instanceof Error && error.message === "MIC_INSECURE_CONTEXT") return MIC_HTTPS_HINT
+
   if (typeof window !== "undefined" && !window.isSecureContext && !isLocalhostHostname(window.location.hostname))
-    return "Микрофон доступен только по HTTPS (или на localhost). Откройте сайт с защищённым соединением и повторите калибровку."
+    return MIC_HTTPS_HINT
 
   if (error instanceof DOMException) {
+    const msg = (error.message || "").toLowerCase()
+    if (
+      (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") &&
+      (msg.includes("insecure") || msg.includes("secure context"))
+    )
+      return MIC_HTTPS_HINT
     if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError")
       return "Доступ к микрофону отклонён. Разрешите запись в настройках браузера для этого сайта и нажмите «Калибровка» снова."
     if (error.name === "NotFoundError" || error.name === "DevicesNotFoundError")
@@ -91,7 +109,7 @@ export function formatMicrophoneOpenError(error: unknown): string {
 
   if (error instanceof Error && error.message === "WEB_AUDIO_UNAVAILABLE") return "Web Audio API недоступен в этом браузере."
 
-  return "Не удалось включить микрофон для калибровки. Проверьте разрешения и HTTPS."
+  return "Не удалось включить микрофон для калибровки. Проверьте разрешения и что сайт открыт по HTTPS или localhost."
 }
 
 /**
@@ -101,8 +119,7 @@ export function formatMicrophoneOpenError(error: unknown): string {
 export async function openCalibrationMicSession(): Promise<CalibrationMicSession> {
   if (typeof window === "undefined") throw new DOMException("no window", "NotSupportedError")
 
-  if (!window.isSecureContext && !isLocalhostHostname(window.location.hostname))
-    throw new DOMException("insecure context", "NotAllowedError")
+  if (!isMicrophoneContextOk()) throw new Error("MIC_INSECURE_CONTEXT")
 
   if (!navigator.mediaDevices?.getUserMedia) throw new Error("MIC_GETUSERMEDIA_MISSING")
 

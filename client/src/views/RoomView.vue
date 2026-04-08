@@ -18,7 +18,7 @@
           @change="onAudioFileSelected"
         />
         <button class="save-btn" type="button" :disabled="!selectedAudioFile || isUploadingAudio" @click="uploadAudioFile">
-          {{ isUploadingAudio ? "Загрузка..." : "Загрузить аудио" }}
+          {{ uploadButtonLabel }}
         </button>
         <button
           class="save-btn"
@@ -39,6 +39,24 @@
           Стоп
         </button>
         <p v-if="calibrationBlockedReason && !isSyncCalibrating" class="calibration-hint">{{ calibrationBlockedReason }}</p>
+      </div>
+      <div v-if="activeAudioTransfer" class="audio-transfer-panel">
+        <div class="audio-transfer-head">
+          <span>{{ activeAudioTransfer.kind === "upload" ? "Загрузка на сервер" : "Скачивание аудио" }}</span>
+          <span v-if="activeAudioTransfer.label" class="audio-transfer-pct">{{ activeAudioTransfer.label }}</span>
+        </div>
+        <div
+          :class="['audio-transfer-track', { 'audio-transfer-track--busy': activeAudioTransfer.indeterminate }]"
+          role="progressbar"
+          :aria-valuenow="activeAudioTransfer.indeterminate ? undefined : activeAudioTransfer.value ?? 0"
+          aria-valuemin="0"
+          aria-valuemax="100"
+        >
+          <div
+            class="audio-transfer-fill"
+            :style="{ width: activeAudioTransfer.indeterminate ? '100%' : `${activeAudioTransfer.value ?? 0}%` }"
+          />
+        </div>
       </div>
       <div v-if="isCurrentMaster && isSyncCalibrating" class="calibration-wave-panel">
         <p class="calibration-wave-label">Сигнал с микрофона</p>
@@ -132,6 +150,7 @@ import {
   openCalibrationMicSession,
   playSyncTonePattern,
   resumeOrCreateAudioContext,
+  isMicrophoneContextOk,
   startMicWaveformAnimation,
   type CalibrationMicSession
 } from "@/utils/syncCalibration"
@@ -184,6 +203,9 @@ export default {
       editingDeviceId: "",
       selectedAudioFile: null as File | null,
       isUploadingAudio: false,
+      isFetchingRoomAudio: false,
+      audioUploadPercent: null as number | null,
+      audioDownloadPercent: null as number | null,
       downloadedAudioRevision: 0,
       audioStatusMessage: "",
       audioObjectUrl: "",
@@ -228,8 +250,39 @@ export default {
       if (!this.devices.length) return false
       return this.devices.every(device => device.isPlaybackSyncReady)
     },
+    microphoneContextOk(): boolean {
+      return isMicrophoneContextOk()
+    },
+    uploadButtonLabel(): string {
+      if (!this.isUploadingAudio) return "Загрузить аудио"
+      if (this.audioUploadPercent !== null) return `Загрузка ${this.audioUploadPercent}%`
+      return "Загрузка…"
+    },
+    activeAudioTransfer(): {
+      kind: "upload" | "download"
+      value: number
+      label: string
+      indeterminate: boolean
+    } | null {
+      if (this.isUploadingAudio)
+        return {
+          kind: "upload",
+          value: this.audioUploadPercent ?? 0,
+          label: this.audioUploadPercent !== null ? `${this.audioUploadPercent}%` : "",
+          indeterminate: this.audioUploadPercent === null
+        }
+      if (this.isFetchingRoomAudio)
+        return {
+          kind: "download",
+          value: this.audioDownloadPercent ?? 0,
+          label: this.audioDownloadPercent !== null ? `${this.audioDownloadPercent}%` : "",
+          indeterminate: this.audioDownloadPercent === null
+        }
+      return null
+    },
     canStartPlaybackCalibration(): boolean {
       if (!this.isCurrentMaster) return false
+      if (!this.microphoneContextOk) return false
       if (!this.areAllDevicesReady) return false
       if (this.isSyncCalibrating) return false
       if (!this.slaveDevicesForCalibration.length) return false
@@ -238,6 +291,8 @@ export default {
     calibrationBlockedReason(): string {
       if (!this.isCurrentMaster) return ""
       if (this.isSyncCalibrating) return ""
+      if (!this.microphoneContextOk)
+        return "Калибровка недоступна: микрофон в браузере работает только по HTTPS или на localhost. По http:// с IP-адреса (например 192.168.…) запрос доступа не появится — поднимите HTTPS или откройте клиент с https:// или http://localhost."
       if (!this.devices.length) return "Нет устройств в данных комнаты."
       if (!this.areAllDevicesReady)
         return "Дождитесь зелёного индикатора аудио у всех устройств (включая вас и ведомых)."
@@ -494,26 +549,39 @@ export default {
       if (!this.currentDeviceId || !this.selectedAudioFile) return
 
       this.isUploadingAudio = true
+      this.audioUploadPercent = null
       try {
-        const room = await uploadRoomAudio(this.roomId, this.currentDeviceId, this.selectedAudioFile)
+        const file = this.selectedAudioFile
+        const room = await uploadRoomAudio(this.roomId, this.currentDeviceId, file, (loaded, total) => {
+          if (total !== null && total > 0) this.audioUploadPercent = Math.min(100, Math.round((loaded / total) * 100))
+          else this.audioUploadPercent = null
+        })
+        this.audioUploadPercent = 100
         this.devices = room.devices
         this.roomCalibrationLocked = Boolean(room.isCalibrationLocked)
+        this.isUploadingAudio = false
+        this.audioUploadPercent = null
         await this.syncAudioState(room)
-        this.audioStatusMessage = `Файл ${this.selectedAudioFile.name} загружен`
+        this.audioStatusMessage = `Файл ${file.name} загружен`
         this.selectedAudioFile = null
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Не удалось загрузить аудио: ${message}`
       } finally {
         this.isUploadingAudio = false
+        this.audioUploadPercent = null
       }
     },
     async syncAudioState(room: RoomDetailsResponse) {
       if (!room.audio.hasAudio) return
       if (room.audio.revision <= this.downloadedAudioRevision) return
 
+      this.isFetchingRoomAudio = true
+      this.audioDownloadPercent = null
       try {
-        const blob = await downloadRoomAudio(this.roomId)
+        const blob = await downloadRoomAudio(this.roomId, percent => {
+          this.audioDownloadPercent = percent
+        })
         await this.cacheAudioBlob(room.audio.revision, blob, room.audio.fileName ?? undefined)
         this.downloadedAudioRevision = room.audio.revision
         await this.waitForRoomAudioCanPlay()
@@ -524,6 +592,9 @@ export default {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Неизвестная ошибка"
         this.errorMessage = `Не удалось скачать аудио: ${message}`
+      } finally {
+        this.isFetchingRoomAudio = false
+        this.audioDownloadPercent = null
       }
     },
     async waitForRoomAudioCanPlay(timeoutMs = 25000): Promise<void> {
@@ -1440,6 +1511,64 @@ h2 {
   margin-top: 16px;
   width: 100%;
   text-align: center;
+}
+
+.audio-transfer-panel {
+  margin-top: 14px;
+  width: 100%;
+  max-width: 520px;
+  margin-left: auto;
+  margin-right: auto;
+  text-align: left;
+}
+
+.audio-transfer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: rgba(190, 220, 205, 0.9);
+}
+
+.audio-transfer-pct {
+  font-variant-numeric: tabular-nums;
+  color: rgba(140, 255, 200, 0.95);
+}
+
+.audio-transfer-track {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(100, 160, 130, 0.35);
+  overflow: hidden;
+}
+
+.audio-transfer-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(60, 160, 110, 0.88), rgba(110, 255, 185, 0.95));
+  transition: width 0.12s ease-out;
+}
+
+.audio-transfer-track--busy .audio-transfer-fill {
+  background: linear-gradient(
+    90deg,
+    rgba(45, 95, 70, 0.55) 0%,
+    rgba(110, 255, 185, 0.8) 45%,
+    rgba(45, 95, 70, 0.55) 100%
+  );
+  background-size: 220% 100%;
+  animation: audio-transfer-shimmer 1s linear infinite;
+}
+
+@keyframes audio-transfer-shimmer {
+  0% {
+    background-position: 220% 0;
+  }
+  100% {
+    background-position: -220% 0;
+  }
 }
 
 .calibration-wave-label {
