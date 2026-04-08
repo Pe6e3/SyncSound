@@ -61,7 +61,10 @@ export async function fetchServerTimeSkewMs(): Promise<number> {
 }
 
 export type CalibrationMicSession = {
+  /** Замеры задержки (короткое окно FFT). */
   analyser: AnalyserNode
+  /** Отдельный анализатор для осциллограммы — не конкурирует за buffer с measureLagMsAfterSendWithSession. */
+  visualAnalyser: AnalyserNode
   buffer: Uint8Array
   stop: () => void
 }
@@ -118,13 +121,18 @@ export async function openCalibrationMicSession(): Promise<CalibrationMicSession
   const source = ctx.createMediaStreamSource(stream)
   const analyser = ctx.createAnalyser()
   analyser.fftSize = 1024
+  const visualAnalyser = ctx.createAnalyser()
+  visualAnalyser.fftSize = 2048
+  visualAnalyser.smoothingTimeConstant = 0.55
   source.connect(analyser)
+  source.connect(visualAnalyser)
   const buffer = new Uint8Array(analyser.frequencyBinCount)
 
   await ctx.resume().catch(() => {})
 
   return {
     analyser,
+    visualAnalyser,
     buffer,
     stop: () => {
       try {
@@ -171,6 +179,90 @@ export function measureLagMsAfterSendWithSession(sendTimePerf: number, session: 
 
     requestAnimationFrame(tick)
   })
+}
+
+/**
+ * Непрерывная осциллограмма микрофона (time domain) на canvas.
+ */
+export function startMicWaveformAnimation(canvas: HTMLCanvasElement, visualAnalyser: AnalyserNode): () => void {
+  const ctx2d = canvas.getContext("2d")
+  if (!ctx2d) return () => {}
+
+  const timeData = new Uint8Array(visualAnalyser.frequencyBinCount)
+  let rafId = 0
+  let stopped = false
+  let cssW = 640
+  let cssH = 132
+
+  const fitCanvas = () => {
+    const wrapper = canvas.parentElement
+    cssW = wrapper ? Math.max(280, Math.floor(wrapper.clientWidth)) : 640
+    cssH = 132
+    const dpr = Math.min(window.devicePixelRatio || 1, 2.5)
+    canvas.width = Math.floor(cssW * dpr)
+    canvas.height = Math.floor(cssH * dpr)
+    canvas.style.width = `${cssW}px`
+    canvas.style.height = `${cssH}px`
+  }
+
+  fitCanvas()
+  const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => fitCanvas()) : null
+  if (ro && canvas.parentElement) ro.observe(canvas.parentElement)
+
+  const draw = () => {
+    if (stopped) return
+
+    visualAnalyser.getByteTimeDomainData(timeData as Parameters<AnalyserNode["getByteTimeDomainData"]>[0])
+
+    const dpr = canvas.width / cssW
+    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+    ctx2d.fillStyle = "rgba(5, 18, 13, 0.95)"
+    ctx2d.fillRect(0, 0, cssW, cssH)
+
+    ctx2d.strokeStyle = "rgba(80, 120, 100, 0.35)"
+    ctx2d.lineWidth = 1
+    ctx2d.beginPath()
+    ctx2d.moveTo(0, cssH / 2)
+    ctx2d.lineTo(cssW, cssH / 2)
+    ctx2d.stroke()
+
+    const slice = timeData.length
+    ctx2d.strokeStyle = "rgba(110, 255, 185, 0.92)"
+    ctx2d.lineWidth = 1.25
+    ctx2d.shadowColor = "rgba(80, 255, 170, 0.35)"
+    ctx2d.shadowBlur = 6
+    ctx2d.beginPath()
+    for (let i = 0; i < slice; i++) {
+      const vi = (timeData[i]! - 128) / 128
+      const px = (i / Math.max(1, slice - 1)) * cssW
+      const py = cssH / 2 - vi * (cssH * 0.44)
+      if (i === 0) ctx2d.moveTo(px, py)
+      else ctx2d.lineTo(px, py)
+    }
+    ctx2d.stroke()
+    ctx2d.shadowBlur = 0
+
+    let rms = 0
+    for (let i = 0; i < slice; i++) {
+      const n = (timeData[i]! - 128) / 128
+      rms += n * n
+    }
+    rms = Math.sqrt(rms / slice)
+    ctx2d.fillStyle = "rgba(180, 235, 210, 0.65)"
+    ctx2d.font = "12px system-ui, sans-serif"
+    ctx2d.fillText(`уровень ≈ ${(rms * 100).toFixed(1)}%`, 8, 18)
+
+    rafId = requestAnimationFrame(draw)
+  }
+
+  rafId = requestAnimationFrame(draw)
+
+  return () => {
+    stopped = true
+    cancelAnimationFrame(rafId)
+    if (ro) ro.disconnect()
+  }
 }
 
 export function isStableWithinMs(samples: number[], maxSpreadMs: number): boolean {

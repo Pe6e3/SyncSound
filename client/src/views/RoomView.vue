@@ -40,6 +40,12 @@
         </button>
         <p v-if="calibrationBlockedReason && !isSyncCalibrating" class="calibration-hint">{{ calibrationBlockedReason }}</p>
       </div>
+      <div v-if="isCurrentMaster && isSyncCalibrating" class="calibration-wave-panel">
+        <p class="calibration-wave-label">Сигнал с микрофона</p>
+        <div class="calibration-wave-wrap">
+          <canvas ref="calibrationWaveCanvas" class="calibration-wave-canvas" />
+        </div>
+      </div>
       <button v-if="pendingPlayAfterUnlock || pendingUnlockForAudioReady" class="save-btn" type="button" @click="unlockAudioPlayback">
         Активировать звук
       </button>
@@ -126,6 +132,7 @@ import {
   openCalibrationMicSession,
   playSyncTonePattern,
   resumeOrCreateAudioContext,
+  startMicWaveformAnimation,
   type CalibrationMicSession
 } from "@/utils/syncCalibration"
 import { downloadRoomAudio, registerDevice, reportAudioReady, transferMaster, updateDeviceName, uploadRoomAudio, type DeviceResponse, type RoomDetailsResponse } from "@/api/roomApi"
@@ -191,6 +198,7 @@ export default {
       roomAudioPlayerBlobUrl: "",
       calibrationAudioContext: null as AudioContext | null,
       isSyncCalibrating: false,
+      calibrationWaveformStop: null as (() => void) | null,
       serverTimeSkewMs: 0 as number,
       roomCalibrationLocked: false
     }
@@ -861,6 +869,11 @@ export default {
       wsDebugLog("исходящее сообщение", payload)
       this.roomSocket.send(JSON.stringify(payload))
     },
+    stopCalibrationWaveform() {
+      if (!this.calibrationWaveformStop) return
+      this.calibrationWaveformStop()
+      this.calibrationWaveformStop = null
+    },
     async runPlaybackCalibration() {
       if (!this.canStartPlaybackCalibration) return
       if (!this.roomSocket || this.roomSocket.readyState !== WebSocket.OPEN) {
@@ -879,6 +892,10 @@ export default {
         try {
           micSession = await openCalibrationMicSession()
           console.log("[SyncSound калибровка] Микрофон открыт (один поток на всю серию замеров).")
+          await this.$nextTick()
+          const waveCanvas = this.$refs.calibrationWaveCanvas
+          if (waveCanvas instanceof HTMLCanvasElement)
+            this.calibrationWaveformStop = startMicWaveformAnimation(waveCanvas, micSession.visualAnalyser)
         } catch (error) {
           this.errorMessage = formatMicrophoneOpenError(error)
           this.audioStatusMessage = ""
@@ -963,6 +980,7 @@ export default {
         console.log("[SyncSound калибровка] Все ведомые обработаны успешно.")
         this.audioStatusMessage = "Калибровка синхронизации завершена. Можно нажимать Play."
       } finally {
+        this.stopCalibrationWaveform()
         if (micSession) {
           micSession.stop()
           micSession = null
@@ -1416,6 +1434,33 @@ h2 {
   flex-wrap: wrap;
   gap: 8px;
   justify-content: center;
+}
+
+.calibration-wave-panel {
+  margin-top: 16px;
+  width: 100%;
+  text-align: center;
+}
+
+.calibration-wave-label {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: rgba(190, 220, 205, 0.9);
+}
+
+.calibration-wave-wrap {
+  width: 100%;
+  min-height: 132px;
+  border-radius: 12px;
+  border: 1px solid rgba(100, 160, 130, 0.35);
+  overflow: hidden;
+  background: rgba(4, 14, 10, 0.65);
+}
+
+.calibration-wave-canvas {
+  display: block;
+  width: 100%;
+  vertical-align: middle;
 }
 
 .audio-input {
