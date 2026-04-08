@@ -70,4 +70,9 @@ jobs:
               . ./.env
               set +a
             fi
+            if [ -n "${DOMAIN:-}" ] && [ "${DOMAIN}" != "localhost" ] && [ ! -f "certbot/conf/live/${DOMAIN}/fullchain.pem" ]; then
+              chmod +x scripts/init-letsencrypt.sh
+              ./scripts/init-letsencrypt.sh
+            fi
             docker compose up --build -d
+            docker compose exec -T nginx nginx -s reload || true
