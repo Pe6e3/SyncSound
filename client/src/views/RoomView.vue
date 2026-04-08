@@ -4,9 +4,6 @@
       <button class="back-btn" type="button" @click="goBackToRooms">Назад</button>
       <h1>Комната</h1>
       <p class="room-id">ID комнаты: {{ roomId }}</p>
-      <p v-if="roomCalibrationLocked" class="calibration-banner">
-        Калибровка: вход для новых устройств закрыт, комната скрыта в общем списке.
-      </p>
       <p v-if="!isCurrentMaster && currentDeviceId" class="master-hint">
         Загрузка аудио, калибровка и Play — только у мастера комнаты (звёздочка ★).
       </p>
@@ -924,8 +921,11 @@ export default {
       try {
         this.calibrationAudioContext = await resumeOrCreateAudioContext(this.calibrationAudioContext)
         playSyncTonePattern(this.calibrationAudioContext)
-      } catch {
-        /* калибровочный тон не критичен */
+      } catch (error) {
+        console.warn("[SyncSound калибровка] ведомое не смогло воспроизвести эталонный тон", error)
+        this.pendingUnlockForAudioReady = true
+        if (!this.audioStatusMessage)
+          this.audioStatusMessage = "Калибровка: нажмите «Активировать звук», затем запустите калибровку снова."
       }
     },
     sendSyncLatencyReportWs(targetDeviceId: string, lagMs: number) {
@@ -934,7 +934,7 @@ export default {
       wsDebugLog("исходящее сообщение", payload)
       this.roomSocket.send(JSON.stringify(payload))
     },
-    sendCalibrationLockMessage(messageType: "start-calibration" | "finish-calibration") {
+    sendCalibrationLockMessage(messageType: "start-calibration") {
       if (!this.roomSocket || this.roomSocket.readyState !== WebSocket.OPEN) return
       const payload = { type: messageType }
       wsDebugLog("исходящее сообщение", payload)
@@ -974,9 +974,6 @@ export default {
           return
         }
 
-        console.log(
-          "[SyncSound калибровка] Блокировка комнаты: новые устройства не смогут зарегистрироваться, комната исчезнет из списка на /sound."
-        )
         this.sendCalibrationLockMessage("start-calibration")
         calibrationLockSent = true
         await sleep(250)
@@ -1056,12 +1053,7 @@ export default {
           micSession.stop()
           micSession = null
         }
-        if (calibrationLockSent) {
-          console.log(
-            "[SyncSound калибровка] Снятие блокировки: комната снова в списке на /sound, регистрация новых устройств открыта."
-          )
-          this.sendCalibrationLockMessage("finish-calibration")
-        }
+        if (calibrationLockSent) void calibrationLockSent
         this.isSyncCalibrating = false
       }
     },

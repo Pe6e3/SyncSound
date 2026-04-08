@@ -199,7 +199,9 @@ export function measureLagMsAfterSendWithSession(sendTimePerf: number, session: 
 }
 
 /**
- * Непрерывная осциллограмма микрофона (time domain) на canvas.
+ * Лента громкости во времени:
+ * - по оси X: последние 30 секунд (слева -> справа),
+ * - по оси Y: относительная амплитуда (пики).
  */
 export function startMicWaveformAnimation(canvas: HTMLCanvasElement, visualAnalyser: AnalyserNode): () => void {
   const ctx2d = canvas.getContext("2d")
@@ -210,6 +212,12 @@ export function startMicWaveformAnimation(canvas: HTMLCanvasElement, visualAnaly
   let stopped = false
   let cssW = 640
   let cssH = 132
+  const timelineMs = 30_000
+  const sampleStepMs = 120
+  const pointsCount = Math.max(60, Math.floor(timelineMs / sampleStepMs))
+  const peaks = new Array<number>(pointsCount).fill(0)
+  let writeIndex = 0
+  let lastSampleAt = 0
 
   const fitCanvas = () => {
     const wrapper = canvas.parentElement
@@ -234,7 +242,24 @@ export function startMicWaveformAnimation(canvas: HTMLCanvasElement, visualAnaly
     const dpr = canvas.width / cssW
     ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-    ctx2d.fillStyle = "rgba(5, 18, 13, 0.95)"
+    const now = performance.now()
+    let rms = 0
+    let peak = 0
+    for (let i = 0; i < timeData.length; i++) {
+      const n = Math.abs((timeData[i]! - 128) / 128)
+      rms += n * n
+      if (n > peak) peak = n
+    }
+    rms = Math.sqrt(rms / timeData.length)
+    const value = Math.max(peak, rms * 1.25)
+
+    if (lastSampleAt === 0 || now - lastSampleAt >= sampleStepMs) {
+      peaks[writeIndex] = value
+      writeIndex = (writeIndex + 1) % pointsCount
+      lastSampleAt = now
+    }
+
+    ctx2d.fillStyle = "rgba(5, 18, 13, 0.98)"
     ctx2d.fillRect(0, 0, cssW, cssH)
 
     ctx2d.strokeStyle = "rgba(80, 120, 100, 0.35)"
@@ -244,31 +269,30 @@ export function startMicWaveformAnimation(canvas: HTMLCanvasElement, visualAnaly
     ctx2d.lineTo(cssW, cssH / 2)
     ctx2d.stroke()
 
-    const slice = timeData.length
-    ctx2d.strokeStyle = "rgba(110, 255, 185, 0.92)"
-    ctx2d.lineWidth = 1.25
-    ctx2d.shadowColor = "rgba(80, 255, 170, 0.35)"
-    ctx2d.shadowBlur = 6
+    // Вертикальные пики по таймлайну: слева старые, справа новые.
+    const xStep = cssW / Math.max(1, pointsCount - 1)
+    ctx2d.strokeStyle = "rgba(110, 255, 185, 0.95)"
+    ctx2d.lineWidth = 1.15
+    ctx2d.shadowColor = "rgba(80, 255, 170, 0.30)"
+    ctx2d.shadowBlur = 4
     ctx2d.beginPath()
-    for (let i = 0; i < slice; i++) {
-      const vi = (timeData[i]! - 128) / 128
-      const px = (i / Math.max(1, slice - 1)) * cssW
-      const py = cssH / 2 - vi * (cssH * 0.44)
-      if (i === 0) ctx2d.moveTo(px, py)
-      else ctx2d.lineTo(px, py)
+    for (let i = 0; i < pointsCount; i++) {
+      const idx = (writeIndex + i) % pointsCount
+      const p = Math.min(1, peaks[idx]!)
+      const x = i * xStep
+      const h = p * (cssH * 0.92)
+      const yTop = cssH - h
+      ctx2d.moveTo(x, cssH)
+      ctx2d.lineTo(x, yTop)
     }
     ctx2d.stroke()
     ctx2d.shadowBlur = 0
 
-    let rms = 0
-    for (let i = 0; i < slice; i++) {
-      const n = (timeData[i]! - 128) / 128
-      rms += n * n
-    }
-    rms = Math.sqrt(rms / slice)
     ctx2d.fillStyle = "rgba(180, 235, 210, 0.65)"
     ctx2d.font = "12px system-ui, sans-serif"
-    ctx2d.fillText(`уровень ≈ ${(rms * 100).toFixed(1)}%`, 8, 18)
+    ctx2d.fillText("30 c", 8, 18)
+    ctx2d.fillText("сейчас", Math.max(8, cssW - 50), 18)
+    ctx2d.fillText(`уровень ≈ ${(value * 100).toFixed(1)}%`, 8, cssH - 8)
 
     rafId = requestAnimationFrame(draw)
   }

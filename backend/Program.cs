@@ -476,27 +476,8 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
                 continue;
             }
 
-            if (messageType == "finish-calibration")
-            {
-                RoomDetailsResponse? roomAfterFinish = null;
-                lock (syncRoot)
-                {
-                    if (!roomDevices.TryGetValue(roomId, out var finishDevices)) goto finishCalibrationDone;
-                    var finishActor = finishDevices.FirstOrDefault(entry => entry.DeviceId == deviceId);
-                    if (finishActor?.IsMaster is not true) goto finishCalibrationDone;
-
-                    roomsCalibrationLocked.Remove(roomId);
-                    roomAfterFinish = BuildRoomResponse(roomId, finishDevices, roomAudioStates, roomsCalibrationLocked, roomSockets);
-                }
-
-            finishCalibrationDone:
-                if (roomAfterFinish is not null)
-                {
-                    await BroadcastRoomState(roomId, roomAfterFinish, roomSockets, syncRoot);
-                    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, roomsCalibrationLocked, roomSockets, syncRoot);
-                }
-                continue;
-            }
+            // finish-calibration намеренно игнорируем: после первой калибровки комната остаётся закрытой постоянно.
+            if (messageType == "finish-calibration") continue;
 
             if (messageType == "sync-tone-start")
             {
@@ -678,7 +659,6 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
             {
                 var leavingDevice = devices.FirstOrDefault(entry => entry.DeviceId == deviceId);
                 var wasMaster = leavingDevice?.IsMaster ?? false;
-                if (wasMaster && roomsCalibrationLocked.Contains(roomId)) roomsCalibrationLocked.Remove(roomId);
 
                 devices.RemoveAll(entry => entry.DeviceId == deviceId);
 
