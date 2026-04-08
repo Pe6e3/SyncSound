@@ -120,10 +120,13 @@ import { collectDeviceInfo } from "@/utils/deviceInfo"
 import {
   averageLast,
   fetchServerTimeSkewMs,
+  formatMicrophoneOpenError,
   isStableWithinMs,
-  measureLagMsAfterSend,
+  measureLagMsAfterSendWithSession,
+  openCalibrationMicSession,
   playSyncTonePattern,
-  resumeOrCreateAudioContext
+  resumeOrCreateAudioContext,
+  type CalibrationMicSession
 } from "@/utils/syncCalibration"
 import { downloadRoomAudio, registerDevice, reportAudioReady, transferMaster, updateDeviceName, uploadRoomAudio, type DeviceResponse, type RoomDetailsResponse } from "@/api/roomApi"
 
@@ -866,11 +869,23 @@ export default {
       }
 
       let calibrationLockSent = false
+      let micSession: CalibrationMicSession | null = null
       this.isSyncCalibrating = true
+      this.errorMessage = ""
       this.audioStatusMessage =
-        "Калибровка: на мастере нужен доступ к микрофону; держите устройства рядом и среднюю громкость на ведомом."
+        "Калибровка: разрешите доступ к микрофону в запросе браузера; держите ведомое устройство рядом."
 
       try {
+        try {
+          micSession = await openCalibrationMicSession()
+          console.log("[SyncSound калибровка] Микрофон открыт (один поток на всю серию замеров).")
+        } catch (error) {
+          this.errorMessage = formatMicrophoneOpenError(error)
+          this.audioStatusMessage = ""
+          console.warn("[SyncSound калибровка] микрофон недоступен", error)
+          return
+        }
+
         console.log(
           "[SyncSound калибровка] Блокировка комнаты: новые устройства не смогут зарегистрироваться, комната исчезнет из списка на /sound."
         )
@@ -889,6 +904,7 @@ export default {
           console.log(`[SyncSound калибровка] --- Устройство ${slave.deviceId}: серия замеров ---`)
           const samples: number[] = []
           const maxAttempts = 32
+          let micFailureAbort = false
 
           for (let attempt = 0; attempt < maxAttempts; attempt++) {
             const sessionId = `${slave.deviceId}-${attempt}-${Date.now()}`
@@ -903,7 +919,7 @@ export default {
             this.roomSocket.send(json)
 
             try {
-              const lagMs = await measureLagMsAfterSend(sendPerf)
+              const lagMs = await measureLagMsAfterSendWithSession(sendPerf, micSession!)
               samples.push(lagMs)
               console.log(
                 `[SyncSound калибровка] ${slave.deviceId}: замер ${samples.length}/${maxAttempts}, задержка ${lagMs.toFixed(2)} ms (цель: 5 замеров подряд с разбросом ≤10 ms)`
@@ -911,13 +927,23 @@ export default {
               if (samples.length >= 5 && isStableWithinMs(samples, 10)) break
             } catch (error) {
               console.warn(`[SyncSound калибровка] ${slave.deviceId}: замер ${attempt + 1} не удался`, error)
+              const msg = error instanceof Error ? error.message : ""
+              if (msg.includes("микрофон") || msg.includes("getUserMedia") || msg.includes("MIC_")) {
+                micFailureAbort = true
+                break
+              }
             }
 
             await sleep(420)
           }
 
+          if (micFailureAbort) {
+            this.errorMessage = "Потерян доступ к микрофону во время калибровки. Запустите снова и не закрывайте разрешение."
+            return
+          }
+
           if (samples.length < 5) {
-            this.errorMessage = `Не удалось стабилизировать задержку для ${slave.deviceId}. Проверьте микрофон и громкость.`
+            this.errorMessage = `Не удалось стабилизировать задержку для ${slave.deviceId}. Проверьте громкость ведомого и положение микрофона.`
             return
           }
 
@@ -937,6 +963,10 @@ export default {
         console.log("[SyncSound калибровка] Все ведомые обработаны успешно.")
         this.audioStatusMessage = "Калибровка синхронизации завершена. Можно нажимать Play."
       } finally {
+        if (micSession) {
+          micSession.stop()
+          micSession = null
+        }
         if (calibrationLockSent) {
           console.log(
             "[SyncSound калибровка] Снятие блокировки: комната снова в списке на /sound, регистрация новых устройств открыта."
