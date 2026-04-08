@@ -66,3 +66,9 @@ yarn-error.log*
 pnpm-debug.log*
 backend/data/version.json
 backend/data/audio/
+
+# Сертификаты и webroot Let's Encrypt (не коммитить ключи)
+.env
+certbot/conf/
+certbot/www/
+certbot/var/

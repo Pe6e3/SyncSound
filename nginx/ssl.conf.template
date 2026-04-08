@@ -1,7 +1,31 @@
+# Плейсхолдер $DOMAIN подставляется через envsubst при старте контейнера (см. docker-entrypoint.d).
 server {
     listen 80;
-    server_name _;
+    listen [::]:80;
+    server_name $DOMAIN;
     client_max_body_size 64m;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name $DOMAIN;
+    client_max_body_size 64m;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SyncSoundSSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
 
     root /usr/share/nginx/html;
     index index.html;

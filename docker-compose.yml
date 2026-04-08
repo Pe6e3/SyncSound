@@ -15,8 +15,34 @@ services:
       context: .
       dockerfile: nginx/Dockerfile
     container_name: syncsound-nginx
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
     depends_on:
       - backend
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:v2.11.0
+    container_name: syncsound-certbot
+    depends_on:
+      - nginx
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    # Цикл продления; разовые certonly — см. scripts/init-letsencrypt.sh (--entrypoint certbot)
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        trap exit TERM
+        while true; do
+          certbot renew --webroot -w /var/www/certbot --quiet || true
+          sleep 12h
+        done
     restart: unless-stopped

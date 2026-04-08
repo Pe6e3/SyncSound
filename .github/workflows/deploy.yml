@@ -64,4 +64,10 @@ jobs:
             cd /home/pe6e3/SyncSound
             git checkout main
             git pull --ff-only origin main
+            if [ -f .env ]; then
+              set -a
+              # shellcheck source=/dev/null
+              . ./.env
+              set +a
+            fi
             docker compose up --build -d
