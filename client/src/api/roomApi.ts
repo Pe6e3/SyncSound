@@ -26,6 +26,7 @@ export type RoomDetailsResponse = {
   roomId: string
   devices: DeviceResponse[]
   audio: RoomAudioResponse
+  isCalibrationLocked: boolean
 }
 
 export type RegisterDevicePayload = {

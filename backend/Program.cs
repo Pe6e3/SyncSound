@@ -9,6 +9,7 @@ var roomDevices = rooms.ToDictionary(roomId => roomId, _ => new List<DeviceEntry
 var roomAudioStates = rooms.ToDictionary(roomId => roomId, _ => new RoomAudioState(null, 0, null));
 var roomSockets = new Dictionary<string, Dictionary<string, WebSocket>>();
 var soundHomeSockets = new Dictionary<string, WebSocket>();
+var roomsCalibrationLocked = new HashSet<string>();
 var syncRoot = new object();
 var versionFilePath = Environment.GetEnvironmentVariable("VERSION_FILE_PATH") ?? "/app/data/version.json";
 var audioBaseDirectory = Environment.GetEnvironmentVariable("AUDIO_STORAGE_PATH") ?? "/app/data/audio";
@@ -59,7 +60,7 @@ app.MapGet("/api/rooms", () =>
 {
     lock (syncRoot)
     {
-        return Results.Ok(BuildRoomsListResponse(rooms, roomDevices));
+        return Results.Ok(BuildRoomsListResponse(rooms, roomDevices, roomsCalibrationLocked));
     }
 });
 
@@ -73,7 +74,7 @@ app.MapPost("/api/rooms", async () =>
         roomAudioStates[roomId] = new RoomAudioState(null, 0, null);
     }
 
-    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, syncRoot);
+    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, roomsCalibrationLocked, syncRoot);
     return Results.Ok(new { roomId });
 });
 
@@ -86,7 +87,7 @@ app.MapGet("/api/rooms/{roomId}", (string roomId) =>
     lock (syncRoot)
     {
         var devices = roomDevices.TryGetValue(roomId, out var value) ? value : new List<DeviceEntry>();
-        return Results.Ok(BuildRoomResponse(roomId, devices, roomAudioStates));
+        return Results.Ok(BuildRoomResponse(roomId, devices, roomAudioStates, roomsCalibrationLocked));
     }
 });
 
@@ -110,6 +111,11 @@ app.MapPost("/api/rooms/{roomId}/devices/register", async (string roomId, Regist
         if (!roomAudioStates.ContainsKey(roomId)) roomAudioStates[roomId] = new RoomAudioState(null, 0, null);
 
         var existingDevice = devices.FirstOrDefault(device => device.DeviceId == request.DeviceId);
+        if (existingDevice is null && roomsCalibrationLocked.Contains(roomId))
+            return Results.Json(
+                new { message = "Комната временно закрыта для входа: идёт калибровка синхронизации." },
+                statusCode: StatusCodes.Status403Forbidden);
+
         if (existingDevice is null)
         {
             var deviceId = IsValidDeviceId(request.DeviceId) ? request.DeviceId! : GenerateDeviceId(devices);
@@ -127,7 +133,7 @@ app.MapPost("/api/rooms/{roomId}/devices/register", async (string roomId, Regist
                 0
             );
             devices.Add(newDevice);
-            response = new RegisterDeviceResponse(deviceId, BuildRoomResponse(roomId, devices, roomAudioStates));
+            response = new RegisterDeviceResponse(deviceId, BuildRoomResponse(roomId, devices, roomAudioStates, roomsCalibrationLocked));
         }
         else
         {
@@ -138,12 +144,12 @@ app.MapPost("/api/rooms/{roomId}/devices/register", async (string roomId, Regist
                 DeviceInfo = normalizedDeviceInfo
             };
             ReplaceDevice(devices, updatedDevice);
-            response = new RegisterDeviceResponse(updatedDevice.DeviceId, BuildRoomResponse(roomId, devices, roomAudioStates));
+            response = new RegisterDeviceResponse(updatedDevice.DeviceId, BuildRoomResponse(roomId, devices, roomAudioStates, roomsCalibrationLocked));
         }
     }
 
     await BroadcastRoomState(roomId, response.Room, roomSockets, syncRoot);
-    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, syncRoot);
+    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, roomsCalibrationLocked, syncRoot);
     return Results.Ok(response);
 });
 
@@ -166,7 +172,7 @@ app.MapPatch("/api/rooms/{roomId}/devices/{deviceId}/name", async (string roomId
             LastSeenUtc = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         };
         ReplaceDevice(devices, updatedDevice);
-        room = BuildRoomResponse(roomId, devices, roomAudioStates);
+        room = BuildRoomResponse(roomId, devices, roomAudioStates, roomsCalibrationLocked);
     }
 
     await BroadcastRoomState(roomId, room, roomSockets, syncRoot);
@@ -196,7 +202,7 @@ app.MapPost("/api/rooms/{roomId}/devices/{deviceId}/master", async (string roomI
             var isTarget = devices[index].DeviceId == deviceId;
             devices[index] = devices[index] with { IsMaster = isTarget };
         }
-        room = BuildRoomResponse(roomId, devices, roomAudioStates);
+        room = BuildRoomResponse(roomId, devices, roomAudioStates, roomsCalibrationLocked);
     }
 
     await BroadcastRoomState(roomId, room, roomSockets, syncRoot);
@@ -222,7 +228,7 @@ app.MapPost("/api/rooms/{roomId}/devices/{deviceId}/audio-ready", async (string 
             LastSeenUtc = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         };
         ReplaceDevice(devices, updated);
-        room = BuildRoomResponse(roomId, devices, roomAudioStates);
+        room = BuildRoomResponse(roomId, devices, roomAudioStates, roomsCalibrationLocked);
     }
 
     await BroadcastRoomState(roomId, room, roomSockets, syncRoot);
@@ -291,7 +297,7 @@ app.MapPost("/api/rooms/{roomId}/audio", async (string roomId, HttpRequest reque
     lock (syncRoot)
     {
         var devices = roomDevices.TryGetValue(roomId, out var value) ? value : new List<DeviceEntry>();
-        room = BuildRoomResponse(roomId, devices, roomAudioStates);
+        room = BuildRoomResponse(roomId, devices, roomAudioStates, roomsCalibrationLocked);
     }
 
     await BroadcastRoomState(roomId, room, roomSockets, syncRoot);
@@ -366,7 +372,7 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
             roomSockets[roomId] = socketsByDevice;
         }
         socketsByDevice[deviceId] = socket;
-        roomSnapshot = BuildRoomResponse(roomId, devices, roomAudioStates);
+        roomSnapshot = BuildRoomResponse(roomId, devices, roomAudioStates, roomsCalibrationLocked);
     }
 
     await BroadcastRoomState(roomId, roomSnapshot!, roomSockets, syncRoot);
@@ -426,7 +432,7 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
                                 LastSeenUtc = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
                             };
                             ReplaceDevice(devices, updated);
-                            roomAfterConfirm = BuildRoomResponse(roomId, devices, roomAudioStates);
+                            roomAfterConfirm = BuildRoomResponse(roomId, devices, roomAudioStates, roomsCalibrationLocked);
                         }
                     }
                 }
@@ -434,7 +440,51 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
                 if (roomAfterConfirm is not null)
                 {
                     await BroadcastRoomState(roomId, roomAfterConfirm, roomSockets, syncRoot);
-                    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, syncRoot);
+                    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, roomsCalibrationLocked, syncRoot);
+                }
+                continue;
+            }
+
+            if (messageType == "start-calibration")
+            {
+                RoomDetailsResponse? roomAfterStart = null;
+                lock (syncRoot)
+                {
+                    if (!roomDevices.TryGetValue(roomId, out var startDevices)) goto startCalibrationDone;
+                    var startActor = startDevices.FirstOrDefault(entry => entry.DeviceId == deviceId);
+                    if (startActor?.IsMaster is not true) goto startCalibrationDone;
+
+                    roomsCalibrationLocked.Add(roomId);
+                    roomAfterStart = BuildRoomResponse(roomId, startDevices, roomAudioStates, roomsCalibrationLocked);
+                }
+
+            startCalibrationDone:
+                if (roomAfterStart is not null)
+                {
+                    await BroadcastRoomState(roomId, roomAfterStart, roomSockets, syncRoot);
+                    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, roomsCalibrationLocked, syncRoot);
+                }
+                continue;
+            }
+
+            if (messageType == "finish-calibration")
+            {
+                RoomDetailsResponse? roomAfterFinish = null;
+                lock (syncRoot)
+                {
+                    if (!roomDevices.TryGetValue(roomId, out var finishDevices)) goto finishCalibrationDone;
+                    var finishActor = finishDevices.FirstOrDefault(entry => entry.DeviceId == deviceId);
+                    if (finishActor?.IsMaster is not true) goto finishCalibrationDone;
+
+                    roomsCalibrationLocked.Remove(roomId);
+                    roomAfterFinish = BuildRoomResponse(roomId, finishDevices, roomAudioStates, roomsCalibrationLocked);
+                }
+
+            finishCalibrationDone:
+                if (roomAfterFinish is not null)
+                {
+                    await BroadcastRoomState(roomId, roomAfterFinish, roomSockets, syncRoot);
+                    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, roomsCalibrationLocked, syncRoot);
                 }
                 continue;
             }
@@ -529,7 +579,7 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
                         LastSeenUtc = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
                     };
                     ReplaceDevice(devices, updated);
-                    roomAfterLatency = BuildRoomResponse(roomId, devices, roomAudioStates);
+                    roomAfterLatency = BuildRoomResponse(roomId, devices, roomAudioStates, roomsCalibrationLocked);
                 }
 
             latencyDone:
@@ -619,6 +669,8 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
             {
                 var leavingDevice = devices.FirstOrDefault(entry => entry.DeviceId == deviceId);
                 var wasMaster = leavingDevice?.IsMaster ?? false;
+                if (wasMaster && roomsCalibrationLocked.Contains(roomId)) roomsCalibrationLocked.Remove(roomId);
+
                 devices.RemoveAll(entry => entry.DeviceId == deviceId);
 
                 if (wasMaster && devices.Count > 0)
@@ -627,13 +679,13 @@ app.Map("/ws/rooms/{roomId}", async (HttpContext context, string roomId) =>
                     ReplaceDevice(devices, nextMaster with { IsMaster = true });
                 }
 
-                updatedRoom = BuildRoomResponse(roomId, devices, roomAudioStates);
+                updatedRoom = BuildRoomResponse(roomId, devices, roomAudioStates, roomsCalibrationLocked);
             }
         }
 
         if (updatedRoom is not null)
             await BroadcastRoomState(roomId, updatedRoom, roomSockets, syncRoot);
-        await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, syncRoot);
+        await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, roomsCalibrationLocked, syncRoot);
 
         if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
             await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Disconnected", CancellationToken.None);
@@ -654,7 +706,7 @@ app.Map("/ws/sound", async (HttpContext context) =>
     lock (syncRoot)
         soundHomeSockets[connectionId] = socket;
 
-    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, syncRoot);
+    await BroadcastSoundHomeState(soundHomeSockets, rooms, roomDevices, roomsCalibrationLocked, syncRoot);
 
     var buffer = new byte[512];
     try
@@ -678,13 +730,15 @@ app.Map("/ws/sound", async (HttpContext context) =>
 static RoomDetailsResponse BuildRoomResponse(
     string roomId,
     List<DeviceEntry> devices,
-    Dictionary<string, RoomAudioState> roomAudioStates
+    Dictionary<string, RoomAudioState> roomAudioStates,
+    HashSet<string> roomsCalibrationLocked
 )
 {
     roomAudioStates.TryGetValue(roomId, out var audioState);
     var audio = MapRoomAudio(audioState);
     var mappedDevices = devices.Select(device => MapDevice(device, audio.Revision)).ToList();
-    return new RoomDetailsResponse(roomId, mappedDevices, audio);
+    var isCalibrationLocked = roomsCalibrationLocked.Contains(roomId);
+    return new RoomDetailsResponse(roomId, mappedDevices, audio, isCalibrationLocked);
 }
 
 static RoomAudioResponse MapRoomAudio(RoomAudioState? audioState)
@@ -806,6 +860,7 @@ static async Task BroadcastSoundHomeState(
     Dictionary<string, WebSocket> soundHomeSockets,
     HashSet<string> rooms,
     Dictionary<string, List<DeviceEntry>> roomDevices,
+    HashSet<string> roomsCalibrationLocked,
     object syncRoot
 )
 {
@@ -815,7 +870,7 @@ static async Task BroadcastSoundHomeState(
     {
         sockets = soundHomeSockets.Values.Where(socket => socket.State == WebSocketState.Open).ToList();
         if (sockets.Count == 0) return;
-        payload = new RoomsListResponse("rooms-state", BuildRoomsListResponse(rooms, roomDevices));
+        payload = new RoomsListResponse("rooms-state", BuildRoomsListResponse(rooms, roomDevices, roomsCalibrationLocked));
     }
 
     var message = JsonSerializer.Serialize(payload);
@@ -834,9 +889,14 @@ static async Task BroadcastSoundHomeState(
     }
 }
 
-static List<RoomListItemResponse> BuildRoomsListResponse(HashSet<string> rooms, Dictionary<string, List<DeviceEntry>> roomDevices)
+static List<RoomListItemResponse> BuildRoomsListResponse(
+    HashSet<string> rooms,
+    Dictionary<string, List<DeviceEntry>> roomDevices,
+    HashSet<string> roomsCalibrationLocked
+)
 {
     return rooms
+        .Where(id => !roomsCalibrationLocked.Contains(id))
         .OrderBy(id => id)
         .Select(id =>
         {
@@ -1038,7 +1098,8 @@ record RegisterDeviceResponse(
 record RoomDetailsResponse(
     [property: JsonPropertyName("roomId")] string RoomId,
     [property: JsonPropertyName("devices")] List<DeviceResponse> Devices,
-    [property: JsonPropertyName("audio")] RoomAudioResponse Audio
+    [property: JsonPropertyName("audio")] RoomAudioResponse Audio,
+    [property: JsonPropertyName("isCalibrationLocked")] bool IsCalibrationLocked
 );
 
 record RoomAudioResponse(

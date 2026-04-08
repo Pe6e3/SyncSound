@@ -4,6 +4,9 @@
       <button class="back-btn" type="button" @click="goBackToRooms">Назад</button>
       <h1>Комната</h1>
       <p class="room-id">ID комнаты: {{ roomId }}</p>
+      <p v-if="roomCalibrationLocked" class="calibration-banner">
+        Калибровка: вход для новых устройств закрыт, комната скрыта в общем списке.
+      </p>
       <div v-if="isCurrentMaster" class="audio-upload">
         <input
           class="audio-input"
@@ -15,7 +18,7 @@
           {{ isUploadingAudio ? "Загрузка..." : "Загрузить аудио" }}
         </button>
         <button class="save-btn" type="button" :disabled="!canStartPlaybackCalibration" @click="runPlaybackCalibration">
-          {{ isSyncCalibrating ? "Калибровка…" : "Калибровка синхр." }}
+          {{ isSyncCalibrating ? "Калибровка…" : "Калибровка" }}
         </button>
         <button class="save-btn" type="button" :disabled="!canPlayAudio" @click="sendPlaySignal">
           Play
@@ -71,6 +74,7 @@
           </p>
           <p class="device-type-line">{{ getDeviceType(device) }}</p>
           <p class="device-activity">Активен {{ formatActivity(device.firstSeenUtc) }}</p>
+          <p class="device-lag-line">Задержка (калибр.): {{ formatPlaybackLag(device) }}</p>
           <div class="device-indicators" aria-hidden="true">
             <span
               :class="['audio-ready-dot', { 'audio-ready-dot--ready': device.isAudioReady }]"
@@ -135,7 +139,8 @@ function summarizeRoomForLog(room: RoomDetailsResponse) {
     roomId: room.roomId,
     deviceCount: room.devices.length,
     audioRevision: room.audio.revision,
-    hasAudio: room.audio.hasAudio
+    hasAudio: room.audio.hasAudio,
+    isCalibrationLocked: room.isCalibrationLocked
   }
 }
 
@@ -173,7 +178,8 @@ export default {
       roomAudioPlayerBlobUrl: "",
       calibrationAudioContext: null as AudioContext | null,
       isSyncCalibrating: false,
-      serverTimeSkewMs: 0 as number
+      serverTimeSkewMs: 0 as number,
+      roomCalibrationLocked: false
     }
   },
   computed: {
@@ -248,6 +254,7 @@ export default {
         this.currentDeviceId = response.deviceId
         window.localStorage.setItem(LOCAL_DEVICE_ID_KEY, response.deviceId)
         this.devices = response.room.devices
+        this.roomCalibrationLocked = Boolean(response.room.isCalibrationLocked)
         await this.syncAudioState(response.room)
         await this.playClick()
         this.connectRoomSocket()
@@ -273,6 +280,7 @@ export default {
           deviceInfo: collectDeviceInfo()
         })
         this.devices = response.room.devices
+        this.roomCalibrationLocked = Boolean(response.room.isCalibrationLocked)
         await this.syncAudioState(response.room)
         this.connectRoomSocket()
         this.logWsSnapshot("после rejoinRoom")
@@ -287,6 +295,7 @@ export default {
       try {
         const room = await updateDeviceName(this.roomId, this.currentDeviceId, this.displayNameInput)
         this.devices = room.devices
+        this.roomCalibrationLocked = Boolean(room.isCalibrationLocked)
         this.editingDeviceId = ""
         this.errorMessage = ""
       } catch (error) {
@@ -397,6 +406,13 @@ export default {
       if (this.canTransferMasterTo(device)) return "Передать мастера этому устройству"
       return "Не мастер"
     },
+    formatPlaybackLag(device: DeviceResponse): string {
+      if (device.isMaster) return "0 ms (опорное)"
+      if (!device.isPlaybackSyncReady) return "—"
+      const v = device.playbackSyncLagMs
+      if (typeof v !== "number" || Number.isNaN(v)) return "—"
+      return `${(Math.round(v * 100) / 100).toFixed(2)} ms`
+    },
     handleRoleDotClick(device: DeviceResponse) {
       if (!this.canTransferMasterTo(device)) return
       this.transferMasterTo(device)
@@ -407,6 +423,7 @@ export default {
       try {
         const room = await transferMaster(this.roomId, device.deviceId, this.currentDeviceId)
         this.devices = room.devices
+        this.roomCalibrationLocked = Boolean(room.isCalibrationLocked)
         await this.syncAudioState(room)
         this.errorMessage = ""
       } catch (error) {
@@ -425,6 +442,7 @@ export default {
       try {
         const room = await uploadRoomAudio(this.roomId, this.currentDeviceId, this.selectedAudioFile)
         this.devices = room.devices
+        this.roomCalibrationLocked = Boolean(room.isCalibrationLocked)
         await this.syncAudioState(room)
         this.audioStatusMessage = `Файл ${this.selectedAudioFile.name} загружен`
         this.selectedAudioFile = null
@@ -508,6 +526,7 @@ export default {
         }, 100)
         const updatedRoom = await reportAudioReady(this.roomId, this.currentDeviceId, revision)
         this.devices = updatedRoom.devices
+        this.roomCalibrationLocked = Boolean(updatedRoom.isCalibrationLocked)
         this.pendingUnlockForAudioReady = false
       } catch (error) {
         if (error instanceof DOMException && error.name === "NotAllowedError") {
@@ -534,6 +553,7 @@ export default {
       void reportAudioReady(this.roomId, this.currentDeviceId, revision)
         .then(updatedRoom => {
           this.devices = updatedRoom.devices
+          this.roomCalibrationLocked = Boolean(updatedRoom.isCalibrationLocked)
         })
         .catch(error => {
           const message = error instanceof Error ? error.message : "Неизвестная ошибка"
@@ -768,8 +788,13 @@ export default {
       void ctx.close().catch(() => {})
       this.calibrationAudioContext = null
     },
-    async handleIncomingSyncTone(payload: { targetDeviceId?: string }) {
+    async handleIncomingSyncTone(payload: { targetDeviceId?: string; sessionId?: string; iteration?: number }) {
       if (!payload.targetDeviceId || payload.targetDeviceId !== this.currentDeviceId) return
+      console.log("[SyncSound калибровка] Ведомое: воспроизвожу эталонный тон", {
+        deviceId: this.currentDeviceId,
+        sessionId: payload.sessionId,
+        iteration: payload.iteration
+      })
       try {
         this.calibrationAudioContext = await resumeOrCreateAudioContext(this.calibrationAudioContext)
         playSyncTonePattern(this.calibrationAudioContext)
@@ -783,6 +808,12 @@ export default {
       wsDebugLog("исходящее сообщение", payload)
       this.roomSocket.send(JSON.stringify(payload))
     },
+    sendCalibrationLockMessage(messageType: "start-calibration" | "finish-calibration") {
+      if (!this.roomSocket || this.roomSocket.readyState !== WebSocket.OPEN) return
+      const payload = { type: messageType }
+      wsDebugLog("исходящее сообщение", payload)
+      this.roomSocket.send(JSON.stringify(payload))
+    },
     async runPlaybackCalibration() {
       if (!this.canStartPlaybackCalibration) return
       if (!this.roomSocket || this.roomSocket.readyState !== WebSocket.OPEN) {
@@ -790,11 +821,20 @@ export default {
         return
       }
 
+      let calibrationLockSent = false
       this.isSyncCalibrating = true
       this.audioStatusMessage =
         "Калибровка: на мастере нужен доступ к микрофону; держите устройства рядом и среднюю громкость на ведомом."
 
       try {
+        console.log(
+          "[SyncSound калибровка] Блокировка комнаты: новые устройства не смогут зарегистрироваться, комната исчезнет из списка на /sound."
+        )
+        this.sendCalibrationLockMessage("start-calibration")
+        calibrationLockSent = true
+        await sleep(250)
+        console.log("[SyncSound калибровка] Начинаю измерения задержки по очереди для каждого ведомого устройства.")
+
         try {
           this.calibrationAudioContext = await resumeOrCreateAudioContext(this.calibrationAudioContext)
         } catch {
@@ -802,6 +842,7 @@ export default {
         }
 
         for (const slave of this.slaveDevicesForCalibration) {
+          console.log(`[SyncSound калибровка] --- Устройство ${slave.deviceId}: серия замеров ---`)
           const samples: number[] = []
           const maxAttempts = 32
 
@@ -821,11 +862,11 @@ export default {
               const lagMs = await measureLagMsAfterSend(sendPerf)
               samples.push(lagMs)
               console.log(
-                `[SyncSound калибровка] устройство ${slave.deviceId}, замер ${samples.length}: ${lagMs.toFixed(2)} ms`
+                `[SyncSound калибровка] ${slave.deviceId}: замер ${samples.length}/${maxAttempts}, задержка ${lagMs.toFixed(2)} ms (цель: 5 замеров подряд с разбросом ≤10 ms)`
               )
               if (samples.length >= 5 && isStableWithinMs(samples, 10)) break
             } catch (error) {
-              console.warn("[SyncSound калибровка] замер не удался", error)
+              console.warn(`[SyncSound калибровка] ${slave.deviceId}: замер ${attempt + 1} не удался`, error)
             }
 
             await sleep(420)
@@ -838,17 +879,26 @@ export default {
 
           if (!isStableWithinMs(samples, 10))
             console.warn(
-              `[SyncSound калибровка] для ${slave.deviceId} разброс последних 5 замеров > 10 ms, берём среднее последних 5`
+              `[SyncSound калибровка] ${slave.deviceId}: разброс последних 5 замеров > 10 ms — используем среднее последних 5`
             )
 
           const avgLag = averageLast(samples, 5)
-          console.log(`[SyncSound калибровка] устройство ${slave.deviceId}: итоговая задержка ≈ ${avgLag.toFixed(2)} ms`)
+          console.log(
+            `[SyncSound калибровка] ${slave.deviceId}: итоговая задержка (в карточку на сервер) ${avgLag.toFixed(2)} ms`
+          )
           this.sendSyncLatencyReportWs(slave.deviceId, avgLag)
           await sleep(280)
         }
 
+        console.log("[SyncSound калибровка] Все ведомые обработаны успешно.")
         this.audioStatusMessage = "Калибровка синхронизации завершена. Можно нажимать Play."
       } finally {
+        if (calibrationLockSent) {
+          console.log(
+            "[SyncSound калибровка] Снятие блокировки: комната снова в списке на /sound, регистрация новых устройств открыта."
+          )
+          this.sendCalibrationLockMessage("finish-calibration")
+        }
         this.isSyncCalibrating = false
       }
     },
@@ -902,6 +952,7 @@ export default {
           if (payload.type === "room-state" && payload.room) {
             wsDebugLog("входящее room-state", summarizeRoomForLog(payload.room), { rawLength: raw.length })
             this.devices = payload.room.devices
+            this.roomCalibrationLocked = Boolean(payload.room.isCalibrationLocked)
             await this.syncAudioState(payload.room)
             return
           }
@@ -1050,6 +1101,23 @@ h2 {
 .room-id {
   margin: 0 0 8px;
   color: var(--text-muted);
+}
+
+.calibration-banner {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 196, 94, 0.55);
+  background: rgba(60, 40, 8, 0.45);
+  color: rgba(255, 224, 170, 0.95);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.device-lag-line {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: rgba(180, 200, 255, 0.78);
 }
 
 .back-btn {
