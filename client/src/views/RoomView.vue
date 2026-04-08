@@ -94,8 +94,9 @@
             <span v-if="device.isMaster">★</span>
           </button>
 
-          <p class="device-name-row">
-            <span class="device-name-text">{{ device.displayName || "Имя не указано" }}</span>
+          <p class="device-title-row">
+            <span class="device-type-line">{{ getDeviceType(device) }}</span>
+            <span v-if="device.displayName" class="device-name-text">{{ device.displayName }}</span>
             <button
               v-if="isCurrentDevice(device)"
               class="name-edit-btn"
@@ -106,9 +107,8 @@
               ✎
             </button>
           </p>
-          <p class="device-type-line">{{ getDeviceType(device) }}</p>
-          <p class="device-activity">Активен {{ formatActivity(device.firstSeenUtc) }}</p>
-          <p class="device-lag-line">Задержка (калибр.): {{ formatPlaybackLag(device) }}</p>
+          <p class="device-lag-line">Задержка: {{ formatPlaybackLag(device) }}</p>
+          <p class="device-activity-corner">{{ formatActivity(device.firstSeenUtc) }}</p>
           <div class="device-indicators" aria-hidden="true">
             <span
               :class="['audio-ready-dot', { 'audio-ready-dot--ready': device.isAudioReady }]"
@@ -1404,28 +1404,32 @@ h2 {
   color: rgba(232, 236, 255, 0.38);
 }
 
-.device-type-line {
-  margin: 0 0 7px;
-  font-size: 13px;
-  color: rgba(232, 236, 255, 0.72);
-}
-
-.device-activity {
-  margin: 0 0 7px;
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-.device-name-row {
+.device-title-row {
   margin: 0 0 8px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
 }
 
+.device-type-line {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(232, 236, 255, 0.72);
+}
+
 .device-name-text {
   font-weight: 700;
   color: var(--brand-strong);
+}
+
+.device-activity-corner {
+  position: absolute;
+  right: 46px;
+  bottom: 7px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1;
 }
 
 .role-dot {
@@ -1479,7 +1483,7 @@ h2 {
   transition: opacity 0.15s ease;
 }
 
-.device-name-row:hover .name-edit-btn {
+.device-title-row:hover .name-edit-btn {
   opacity: 1;
   pointer-events: auto;
 }
