@@ -7,6 +7,9 @@
       <p v-if="roomCalibrationLocked" class="calibration-banner">
         Калибровка: вход для новых устройств закрыт, комната скрыта в общем списке.
       </p>
+      <p v-if="!isCurrentMaster && currentDeviceId" class="master-hint">
+        Загрузка аудио, калибровка и Play — только у мастера комнаты (звёздочка ★).
+      </p>
       <div v-if="isCurrentMaster" class="audio-upload">
         <input
           class="audio-input"
@@ -17,7 +20,13 @@
         <button class="save-btn" type="button" :disabled="!selectedAudioFile || isUploadingAudio" @click="uploadAudioFile">
           {{ isUploadingAudio ? "Загрузка..." : "Загрузить аудио" }}
         </button>
-        <button class="save-btn" type="button" :disabled="!canStartPlaybackCalibration" @click="runPlaybackCalibration">
+        <button
+          class="save-btn"
+          type="button"
+          :disabled="!canStartPlaybackCalibration"
+          :title="calibrationBlockedReason || 'Запустить калибровку задержки'"
+          @click="runPlaybackCalibration"
+        >
           {{ isSyncCalibrating ? "Калибровка…" : "Калибровка" }}
         </button>
         <button class="save-btn" type="button" :disabled="!canPlayAudio" @click="sendPlaySignal">
@@ -29,6 +38,7 @@
         <button class="save-btn" type="button" :disabled="!canMasterTransportControls" @click="sendStopSignal">
           Стоп
         </button>
+        <p v-if="calibrationBlockedReason && !isSyncCalibrating" class="calibration-hint">{{ calibrationBlockedReason }}</p>
       </div>
       <button v-if="pendingPlayAfterUnlock || pendingUnlockForAudioReady" class="save-btn" type="button" @click="unlockAudioPlayback">
         Активировать звук
@@ -199,8 +209,9 @@ export default {
       if (!this.devices.length) return false
       return this.devices.every(device => device.isAudioReady)
     },
+    /** Ведомые с готовым аудио (без требования isOnline — иначе кнопка часто недоступна до синхр. состояния WS). */
     slaveDevicesForCalibration(): DeviceResponse[] {
-      return this.orderedDevices.filter(device => !device.isMaster && device.isOnline && device.isAudioReady)
+      return this.orderedDevices.filter(device => !device.isMaster && device.isAudioReady)
     },
     areAllDevicesPlaybackSyncReady(): boolean {
       if (!this.devices.length) return false
@@ -212,6 +223,16 @@ export default {
       if (this.isSyncCalibrating) return false
       if (!this.slaveDevicesForCalibration.length) return false
       return true
+    },
+    calibrationBlockedReason(): string {
+      if (!this.isCurrentMaster) return ""
+      if (this.isSyncCalibrating) return ""
+      if (!this.devices.length) return "Нет устройств в данных комнаты."
+      if (!this.areAllDevicesReady)
+        return "Дождитесь зелёного индикатора аудио у всех устройств (включая вас и ведомых)."
+      if (!this.slaveDevicesForCalibration.length)
+        return "Нужен хотя бы один ведомый с готовым аудио: откройте комнату на втором устройстве и дождитесь загрузки трека."
+      return ""
     },
     canPlayAudio(): boolean {
       if (!this.isCurrentMaster) return false
@@ -226,6 +247,27 @@ export default {
     }
   },
   methods: {
+    logRoomCalibrationState(context: string) {
+      const master = this.currentDevice
+      const slaves = this.slaveDevicesForCalibration
+      console.log(`[SyncSound] ${context}`, {
+        roomId: this.roomId,
+        deviceId: this.currentDeviceId,
+        isMaster: Boolean(master?.isMaster),
+        audioReadyThis: Boolean(master?.isAudioReady),
+        rev: this.downloadedAudioRevision,
+        devices: this.devices.map(d => ({
+          id: d.deviceId.slice(0, 8),
+          master: d.isMaster,
+          audio: d.isAudioReady,
+          online: d.isOnline,
+          sync: d.isPlaybackSyncReady
+        })),
+        slavesForCalibration: slaves.length,
+        canCalibrate: this.canStartPlaybackCalibration,
+        hint: this.calibrationBlockedReason || "калибровка доступна"
+      })
+    },
     logWsSnapshot(context: string) {
       if (!WS_DEBUG) return
       const main = this.roomSocket
@@ -259,6 +301,7 @@ export default {
         await this.playClick()
         this.connectRoomSocket()
         this.logWsSnapshot("после enterRoom")
+        this.$nextTick(() => this.logRoomCalibrationState("после enterRoom"))
 
         const currentDevice = this.devices.find(device => device.deviceId === response.deviceId)
         this.displayNameInput = currentDevice?.displayName ?? ""
@@ -284,6 +327,7 @@ export default {
         await this.syncAudioState(response.room)
         this.connectRoomSocket()
         this.logWsSnapshot("после rejoinRoom")
+        this.$nextTick(() => this.logRoomCalibrationState("после rejoinRoom"))
       } catch {
         wsDebugLog("rejoinRoom: ошибка регистрации, планируется повтор")
         this.scheduleReconnect()
@@ -954,6 +998,7 @@ export default {
             this.devices = payload.room.devices
             this.roomCalibrationLocked = Boolean(payload.room.isCalibrationLocked)
             await this.syncAudioState(payload.room)
+            this.$nextTick(() => this.logRoomCalibrationState("после room-state (WS)"))
             return
           }
 
@@ -1101,6 +1146,22 @@ h2 {
 .room-id {
   margin: 0 0 8px;
   color: var(--text-muted);
+}
+
+.master-hint {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.calibration-hint {
+  flex: 1 1 100%;
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: rgba(200, 214, 255, 0.85);
+  line-height: 1.35;
+  text-align: center;
 }
 
 .calibration-banner {
@@ -1354,5 +1415,11 @@ h2 {
   color: #052317;
   cursor: pointer;
   font-weight: 600;
+}
+
+.save-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: grayscale(0.25);
 }
 </style>
