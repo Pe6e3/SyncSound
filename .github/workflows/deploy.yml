@@ -10,48 +10,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Increment deploy version
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          script: |
-            set -e
-            cd /home/pe6e3/SyncSound
-            git checkout main
-            git pull --ff-only origin main
-            mkdir -p backend/data
-            if [ -f backend/data/version.json ] && [ ! -w backend/data/version.json ]; then
-              docker run --rm -v "$PWD/backend/data:/data" alpine:3.20 sh -c "chown -R $(id -u):$(id -g) /data && chmod -R u+rwX /data"
-            fi
-            python3 - <<'PY'
-            import json
-            import re
-            from pathlib import Path
-
-            version_file = Path("backend/data/version.json")
-
-            if version_file.exists():
-                data = json.loads(version_file.read_text())
-                version = str(data.get("version", "v1.0.0"))
-            else:
-                version = "v1.0.0"
-
-            match = re.match(r"^v(\d+)\.(\d+)\.(\d+)$", version)
-            if not match:
-                major, minor, patch = 1, 0, 0
-            else:
-                major, minor, patch = map(int, match.groups())
-
-            patch += 1
-            next_version = f"v{major}.{minor}.{patch}"
-            version_file.write_text(json.dumps({"version": next_version}))
-            print(f"Deploy version: {next_version}")
-            PY
-            cat backend/data/version.json
-
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -64,15 +22,39 @@ jobs:
             cd /home/pe6e3/SyncSound
             git checkout main
             git pull --ff-only origin main
-            if [ -f .env ]; then
-              set -a
-              # shellcheck source=/dev/null
-              . ./.env
-              set +a
+
+            mkdir -p backend/data backend/data/audio
+            python3 - <<'PY'
+            import json
+            import re
+            from pathlib import Path
+            version_file = Path("backend/data/version.json")
+            if version_file.exists():
+                data = json.loads(version_file.read_text())
+                version = str(data.get("version", "v1.0.0"))
+            else:
+                version = "v1.0.0"
+            match = re.match(r"^v(\d+)\.(\d+)\.(\d+)$", version)
+            if not match:
+                major, minor, patch = 1, 0, 0
+            else:
+                major, minor, patch = map(int, match.groups())
+            patch += 1
+            version_file.write_text(json.dumps({"version": f"v{major}.{minor}.{patch}"}))
+            PY
+
+            dotnet publish backend/SyncSound.Api.csproj -c Release -o /home/pe6e3/SyncSound/publish/backend
+            npm --prefix client ci
+            npm --prefix client run build
+
+            mkdir -p /home/pe6e3/.config/systemd/user
+            cp -f deploy/systemd-user/syncsound-backend.service /home/pe6e3/.config/systemd/user/syncsound-backend.service
+
+            if ! systemctl --user daemon-reload; then
+              echo "ERROR: systemd --user unavailable. Run once: sudo loginctl enable-linger pe6e3"
+              exit 1
             fi
-            if [ -n "${DOMAIN:-}" ] && [ "${DOMAIN}" != "localhost" ] && [ ! -f "certbot/conf/live/${DOMAIN}/fullchain.pem" ]; then
-              chmod +x scripts/init-letsencrypt.sh
-              ./scripts/init-letsencrypt.sh
-            fi
-            docker compose up --build -d
-            docker compose exec -T nginx nginx -s reload || true
+
+            systemctl --user enable --now syncsound-backend.service
+            systemctl --user restart syncsound-backend.service
+            systemctl --user status syncsound-backend.service --no-pager

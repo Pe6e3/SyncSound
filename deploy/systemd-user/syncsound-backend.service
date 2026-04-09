@@ -1,0 +1,16 @@
+[Unit]
+Description=SyncSound Backend (user service)
+After=network.target
+
+[Service]
+WorkingDirectory=/home/pe6e3/SyncSound/publish/backend
+ExecStart=/usr/bin/dotnet /home/pe6e3/SyncSound/publish/backend/SyncSound.Api.dll
+Restart=always
+RestartSec=5
+SyslogIdentifier=SyncSoundBackend
+Environment=ASPNETCORE_URLS=http://127.0.0.1:8080
+Environment=VERSION_FILE_PATH=/home/pe6e3/SyncSound/backend/data/version.json
+Environment=AUDIO_STORAGE_PATH=/home/pe6e3/SyncSound/backend/data/audio
+
+[Install]
+WantedBy=default.target
