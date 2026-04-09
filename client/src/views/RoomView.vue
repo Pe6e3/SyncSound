@@ -1013,7 +1013,15 @@ export default {
             } catch (error) {
               console.warn(`[SyncSound калибровка] ${slave.deviceId}: замер ${attempt + 1} не удался`, error)
               const msg = error instanceof Error ? error.message : ""
-              if (msg.includes("микрофон") || msg.includes("getUserMedia") || msg.includes("MIC_")) {
+              const isMicAccessLost =
+                msg.includes("getUserMedia") ||
+                msg.startsWith("MIC_") ||
+                msg === "WEB_AUDIO_UNAVAILABLE" ||
+                msg.includes("NotReadableError") ||
+                msg.includes("TrackStartError") ||
+                msg.includes("NotAllowedError") ||
+                msg.includes("PermissionDeniedError")
+              if (isMicAccessLost) {
                 micFailureAbort = true
                 break
               }

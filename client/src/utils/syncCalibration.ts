@@ -166,9 +166,9 @@ export async function openCalibrationMicSession(): Promise<CalibrationMicSession
 /** Один замер по уже открытому микрофону (поток не останавливается). */
 export function measureLagMsAfterSendWithSession(sendTimePerf: number, session: CalibrationMicSession): Promise<number> {
   const { analyser, buffer } = session
-  const thresholdRms = 0.1
-  const minAfterSendMs = 12
-  const deadline = sendTimePerf + 2800
+  const thresholdRms = 0.065
+  const minAfterSendMs = 20
+  const deadline = sendTimePerf + 4500
 
   return new Promise((resolve, reject) => {
     const tick = () => {
@@ -187,7 +187,8 @@ export function measureLagMsAfterSendWithSession(sendTimePerf: number, session: 
       }
 
       if (now > deadline) {
-        reject(new Error("Таймаут ожидания сигнала калибровки на микрофоне мастера"))
+        // Код без слова «микрофон»: иначе в RoomView ошибочно принимали таймаут за потерю доступа к микрофону.
+        reject(new Error("CALIBRATION_SIGNAL_TIMEOUT"))
         return
       }
 
